@@ -1,23 +1,39 @@
 #include "log.h"
 #include "task.h"
-#include <unistd.h>
+#include "excutor.h"
 
 task<int> add(int a, int b) {
     co_return a + b;
 }
 
-task<int> bar() {
-    log::info("{} start", __func__);
-    co_return co_await add(1, 4);
+task<int> nested() {
+    int a = co_await add(1, 2);
+    int b = co_await add(3, 4);
+    co_return a + b;
+}
+
+task<void> void_task() {
+    log::info("void_task running");
+    co_return;
 }
 
 int main() {
     log::set_level(log::Level::DBUG);
-    log::info("{} start", __func__);
 
-    int c = sync_wait(add(1, 3));
-    int r = sync_wait(bar());
-    log::info("c:{}:{}", c, r);
+    log::info("=== task test ===");
 
+    // Test simple task
+    int result = excutor::sync_wait(add(10, 20));
+    log::info("add(10, 20) = {}", result);
+
+    // Test nested task
+    int nested_result = excutor::sync_wait(nested());
+    log::info("nested() = {}", nested_result);
+
+    // Test void task
+    excutor::sync_wait(void_task());
+    log::info("void_task completed");
+
+    log::info("=== all tests passed ===");
     return 0;
 }

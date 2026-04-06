@@ -1,8 +1,8 @@
-#include "log.h"
 #include "async.h"
+#include "log.h"
 #include "task.h"
 
-task<int> handle_client2(connection conn) {
+task<int> handle_client(connection conn) {
     std::vector<unsigned char> buffer(4096);
 
     while(true) {
@@ -29,13 +29,13 @@ task<int> handle_client2(connection conn) {
             break;
         }
 
-        log::info("Echoed {} byte to client\n", bytes_read);
+        // log::info("Echoed {} byte to client\n", bytes_read);
     }
 
     co_return 0;
 }
 
-task<int> server2(acceptor& ac) {
+task<int> server(acceptor& ac) {
     log::info("Echo server started, waiting for connections...");
 
     while(true) {
@@ -47,7 +47,8 @@ task<int> server2(acceptor& ac) {
 
         log::info("New connection accepted");
 
-        co_await handle_client2(conn);
+        // 分离协程，不阻塞调用者
+        excutor::detach(handle_client(conn));
     }
 }
 
@@ -61,7 +62,7 @@ int main() {
         return -1;
     }
 
-    sync_wait(server2(ac));
+    excutor::sync_wait(server(ac)); // 这里等待协程完成
 
     log::info("{} exsit", __func__);
     return 0;

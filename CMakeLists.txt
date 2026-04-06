@@ -16,7 +16,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address -fsanit
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address -fsanitize=undefined")
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_library(c++co SHARED src/log.cc src/excutor.cc src/fd.cc src/async.cc)
+add_library(c++co SHARED src/log.cc src/excutor.cc src/async.cc)
 
 add_executable(echo_server test/echo_server.cc)
 target_link_libraries(echo_server PRIVATE c++co)
@@ -24,9 +24,9 @@ target_link_libraries(echo_server PRIVATE c++co)
 add_executable(echo_client test/echo_client.cc)
 target_link_libraries(echo_client PRIVATE c++co)
 
+add_executable(echo_client_mt test/echo_client_mt.cc)
+target_link_libraries(echo_client_mt PRIVATE c++co)
 
-add_executable(thrd_test test/thrdtest.cc)
-target_link_libraries(thrd_test PRIVATE c++co)
 
 add_executable(task_test test/task_test.cc)
 target_link_libraries(task_test PRIVATE c++co)

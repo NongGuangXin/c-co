@@ -6,7 +6,6 @@
 #include "spdlog/common.h"
 #include "spdlog/spdlog.h"
 #else
-#include <mutex>
 #include <chrono>
 #include <iostream>
 #endif

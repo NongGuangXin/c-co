@@ -1,226 +1,183 @@
 #include "excutor.h"
-
-#include <array>
-#include <atomic>
-#include <mutex>
-#include <queue>
-#include <thread>
-#include <utility>
-#include <sstream>
-#include <stdexcept>
-#include <unordered_map>
-#include <condition_variable>
-
-#include <cerrno>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <errno.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-
-#include "fd.h"
 #include "log.h"
 
-class thrdLoop {
-  public:
-    thrdLoop(): thrd_(std::thread(&thrdLoop::thrd_loop, this)) { }
-    ~thrdLoop() {
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            stop_.store(true, std::memory_order_relaxed);
-        }
-        cv_.notify_one();
-        if(thrd_.joinable()) { thrd_.join(); }
-    }
+#include <cerrno>
+#include <cstring>
+#include <unistd.h>
+#include <sys/epoll.h>
 
-  public:
-    void execute(task_t&& task) {
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            if(stop_.load(std::memory_order_relaxed)) {
-                log::erro("thrdLoop already stopped, cannot execute task");
-                return;
-            }
-            task_queue_.push(std::forward<task_t>(task));
-        }
-        cv_.notify_one();
-    }
-
-  private:
-    std::condition_variable cv_{};
-    std::queue<task_t>      task_queue_{};
-    std::atomic<bool>       stop_{false};
-    std::thread             thrd_;
-    std::mutex              mtx_{};
-
-  private:
-    void thrd_loop() {
-        log::dbug("thread:{}, id:{} start", __func__, thread_id());
-        while(true) {
-            std::queue<task_t> local_queue;
-
-            {
-                std::unique_lock<std::mutex> lock(mtx_);
-                cv_.wait(lock, [this]() {
-                    return !task_queue_.empty() ||
-                           stop_.load(std::memory_order_relaxed);
-                });
-                local_queue.swap(task_queue_);
-            }
-
-            while(local_queue.empty() == false) {
-                task_t task = std::move(local_queue.front());
-                local_queue.pop();
-                if(task) task();
-            }
-
-            if(stop_.load(std::memory_order_relaxed)) { break; }
-        }
-        log::dbug("thread:{}, id:{} exit", __func__, thread_id());
-    }
-};
-
-consteval auto event_array() {
-    std::array<size_t, static_cast<size_t>(co_event::EVENT_MAX)> arr{};
-    arr[static_cast<size_t>(co_event::READ)]  = EPOLLIN;
-    arr[static_cast<size_t>(co_event::WRITE)] = EPOLLOUT;
-    return arr;
+excutor& excutor::instance() {
+    static excutor inst;
+    return inst;
 }
 
-inline constexpr auto __ep_event = event_array();
-
-class epoller {
-  public:
-    epoller():
-        efd_(::epoll_create1(EPOLL_CLOEXEC)),
-        stop_fd_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
-        epoll_event ev;
-        ev.events  = EPOLLIN | EPOLLET;
-        ev.data.fd = stop_fd_;
-        if(0 != ::epoll_ctl(efd_, EPOLL_CTL_ADD, stop_fd_, &ev)) {
-            log::erro("epoll add error:[{}]-{}", errno, ::strerror(errno));
-            throw std::runtime_error("epoller init error");
+excutor::excutor() {
+    // 创建多个 epoll 实例
+    for(size_t i = 0; i < DEFAULT_EPOLL_THREADS; i++) {
+        auto ep      = std::make_unique<epoll_instance>();
+        ep->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
+        if(ep->epoll_fd < 0) {
+            log::erro("epoll_create1 failed: {}", std::strerror(errno));
+            return;
         }
-
-        thrd_ = std::thread(&epoller::work_loop, this);
+        log::dbug("created epoll instance {}, fd={}", i, ep->epoll_fd);
+        epollers_.push_back(std::move(ep));
     }
 
-    ~epoller() {
-        uint64_t val = 1;
-        ssize_t  n   = ::write(stop_fd_, &val, sizeof(val));
-        if(n != sizeof(val)) {
-            log::erro("write errno:[{}]-{}", errno, ::strerror(errno));
-        }
-
-        if(thrd_.joinable()) { thrd_.join(); }
-
-        ::close(efd_);
-        ::close(stop_fd_);
-
-        wait_event_.clear();
+    // 启动 epoll 事件线程
+    for(size_t i = 0; i < DEFAULT_EPOLL_THREADS; i++) {
+        epoll_threads_.emplace_back([this, i]() { epoll_loop(i); });
     }
 
-    void suspend(const FileDescriptor& fd, co_event co_ev, task_t&& task) {
-        epoll_event ev;
-        ev.events  = __ep_event[co_ev] | EPOLLET;
-        ev.data.fd = fd.handle();
-
-        if(0 != ::epoll_ctl(efd_, EPOLL_CTL_ADD, ev.data.fd, &ev)) {
-            if(errno == EEXIST) {
-                if(0 != ::epoll_ctl(efd_, EPOLL_CTL_MOD, ev.data.fd, &ev)) {
-                    log::erro(
-                        "epoll mod error:[{}]-{}", errno, ::strerror(errno));
-                }
-            } else {
-                log::erro("epoll add error:[{}]-{}", errno, ::strerror(errno));
-            }
-        }
-        wait_event_[ev.data.fd] = std::move(task);
+    // 启动 worker 线程池
+    for(size_t i = 0; i < DEFAULT_WORKER_THREADS; i++) {
+        worker_threads_.emplace_back([this]() { worker_loop(); });
     }
 
-  private:
-    int                             efd_{-1};
-    int                             stop_fd_{-1};
-    std::thread                     thrd_;
-    std::unordered_map<int, task_t> wait_event_;
+    log::dbug("excutor created: {} epoll threads, {} worker threads",
+        DEFAULT_EPOLL_THREADS, DEFAULT_WORKER_THREADS);
+}
 
-    void work_loop() {
-        log::dbug("epoll loop start");
-        constexpr int maxevents = 1024;
-        epoll_event   events[maxevents];
+excutor::~excutor() {
+    running_ = false;
+    queue_cv_.notify_all();
 
-        while(true) {
-            int n = ::epoll_wait(efd_, events, maxevents, -1);
-            if(n < 0) {
-                if(errno == EBADF) {
-                    break; // by close(epfd)
-                }
-                if(errno == EINTR) { continue; }
-                log::erro("epoll wait error:[{}]-{}", errno, ::strerror(errno));
-            }
-
-            if(n == 0) { /* timeout */
-                continue;
-            }
-
-            for(int i = 0; i < n; i++) {
-                int fd = events[i].data.fd;
-
-                if(fd == stop_fd_) {
-                    for(auto& [fd, task]: wait_event_) {
-                        excutor::instance().execute(task);
-                    }
-                    return;
-                }
-
-                auto it = wait_event_.find(fd);
-                if(it == wait_event_.end()) { continue; }
-
-                if(::epoll_ctl(efd_, EPOLL_CTL_DEL, fd, nullptr) != 0) {
-                    log::erro(
-                        "epoll del error:[{}]-{}", errno, ::strerror(errno));
-                }
-                task_t task = std::move(it->second);
-                wait_event_.erase(it);
-                excutor::instance().execute(task);
-            }
-        }
-        return;
+    for(auto& t: epoll_threads_) {
+        if(t.joinable()) t.join();
     }
-};
-
-class excutor::excutorImpl {
-  public:
-    void execute(task_t&& task) {
-        thrd_.execute(std::forward<task_t>(task));
+    for(auto& t: worker_threads_) {
+        if(t.joinable()) t.join();
     }
-
-    void suspend(const FileDescriptor& fd, co_event ev, task_t&& task) {
-        epoller_.suspend(fd, ev, std::forward<task_t>(task));
+    for(auto& ep: epollers_) {
+        if(ep->epoll_fd >= 0) ::close(ep->epoll_fd);
     }
-
-  private:
-    thrdLoop thrd_;
-    epoller  epoller_;
-};
+}
 
 void excutor::execute(task_t task) {
-    impl_->execute(std::forward<task_t>(task));
+    {
+        std::lock_guard lock(queue_mutex_);
+        task_queue_.push(std::move(task));
+    }
+    queue_cv_.notify_one();
 }
 
-void excutor::suspend(const FileDescriptor& fd, co_event ev, task_t task) {
-    impl_->suspend(fd, ev, std::forward<task_t>(task));
+size_t excutor::fd_to_epoll_index(int fd) const {
+    return static_cast<size_t>(fd) % epollers_.size();
 }
 
-excutor::excutor(): impl_(std::make_unique<excutorImpl>()) { }
-excutor::~excutor() = default;
+void excutor::register_event(
+    const FileDescriptor& fd, co_event ev, task_t task) {
+    int    raw_fd = fd.handle();
+    size_t idx    = fd_to_epoll_index(raw_fd);
+    auto&  ep     = *epollers_[idx];
 
-std::string thread_id() {
-    std::thread::id    thrd_id = std::this_thread::get_id();
-    std::ostringstream oss;
-    oss << thrd_id;
-    return oss.str();
+    log::dbug("register_event fd={} ev={} epoll[{}]", raw_fd,
+        ev == READ ? "READ" : "WRITE", idx);
+
+    struct epoll_event epev{};
+    epev.events = (ev == READ) ? EPOLLIN : EPOLLOUT;
+    epev.events |= EPOLLONESHOT;
+    epev.data.fd = raw_fd;
+
+    // 先插入 callback 再注册 epoll，确保事件触发时 callback 已就绪
+    {
+        std::lock_guard lock(ep.mutex);
+        ep.callbacks[raw_fd] = std::move(task);
+    }
+
+    // 先 ADD（常规路径：首次注册或 EPOLLONESHOT 消费后重新注册）
+    // EEXIST 时 MOD（短写循环：fd 仍在 epoll 中但 oneshot 已禁用，需重新激活）
+    bool ok = true;
+    if(::epoll_ctl(ep.epoll_fd, EPOLL_CTL_ADD, raw_fd, &epev) < 0) {
+        if(errno == EEXIST) {
+            if(::epoll_ctl(ep.epoll_fd, EPOLL_CTL_MOD, raw_fd, &epev) < 0) {
+                log::erro("epoll_ctl MOD failed fd={}: {}", raw_fd,
+                    std::strerror(errno));
+                ok = false;
+            }
+        } else {
+            log::erro(
+                "epoll_ctl ADD failed fd={}: {}", raw_fd, std::strerror(errno));
+            ok = false;
+        }
+    }
+
+    // epoll_ctl 失败时，取回 callback 并在线程池中执行，避免协程永久挂起
+    if(!ok) {
+        task_t cb;
+        {
+            std::lock_guard lock(ep.mutex);
+            auto            it = ep.callbacks.find(raw_fd);
+            if(it != ep.callbacks.end()) {
+                cb = std::move(it->second);
+                ep.callbacks.erase(it);
+            }
+        }
+        if(cb) {
+            log::warn("executing callback for failed epoll_ctl fd={}", raw_fd);
+            execute(std::move(cb));
+        }
+    }
+}
+
+void excutor::unregister_event(const FileDescriptor& fd) {
+    int    raw_fd = fd.handle();
+    size_t idx    = fd_to_epoll_index(raw_fd);
+    auto&  ep     = *epollers_[idx];
+
+    log::dbug("unregister_event fd={} epoll[{}]", raw_fd, idx);
+
+    ::epoll_ctl(ep.epoll_fd, EPOLL_CTL_DEL, raw_fd, nullptr);
+
+    std::lock_guard lock(ep.mutex);
+    ep.callbacks.erase(raw_fd);
+}
+
+void excutor::epoll_loop(size_t index) {
+    constexpr int      MAX_EVENTS = 64;
+    struct epoll_event events[MAX_EVENTS];
+    auto&              ep = *epollers_[index];
+
+    while(running_) {
+        int n = ::epoll_wait(ep.epoll_fd, events, MAX_EVENTS, 100);
+        if(n < 0) {
+            if(errno == EINTR) continue;
+            log::erro("epoll_wait error on epoll[{}]: {}", index,
+                std::strerror(errno));
+            break;
+        }
+
+        for(int i = 0; i < n; i++) {
+            int    fd = events[i].data.fd;
+            task_t cb;
+            {
+                std::lock_guard lock(ep.mutex);
+                auto            it = ep.callbacks.find(fd);
+                if(it != ep.callbacks.end()) {
+                    cb = std::move(it->second);
+                    ep.callbacks.erase(it);
+                }
+            }
+            if(cb) {
+                // 将 IO 回调投递到线程池执行，避免阻塞 epoll 线程
+                execute(std::move(cb));
+            }
+        }
+    }
+}
+
+void excutor::worker_loop() {
+    while(true) {
+        task_t task;
+        {
+            std::unique_lock lock(queue_mutex_);
+            queue_cv_.wait(
+                lock, [this]() { return !task_queue_.empty() || !running_; });
+            if(!running_ && task_queue_.empty()) break;
+            if(task_queue_.empty()) continue;
+            task = std::move(task_queue_.front());
+            task_queue_.pop();
+        }
+        if(task) task();
+    }
 }

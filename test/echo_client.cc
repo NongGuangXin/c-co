@@ -81,7 +81,7 @@ int main() {
     log::set_level(log::Level::INFO);
     log::info("Echo client starting...");
 
-    sync_wait(echo_client(9999));
+    excutor::sync_wait(echo_client(9999));
 
     log::info("Echo client exited");
     return 0;
