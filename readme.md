@@ -16,13 +16,11 @@
 ├── include/          # 头文件目录
 │   ├── async.h       # 异步网络操作（connection、acceptor）
 │   ├── excutor.h     # 任务执行器和事件循环
-│   ├── fd.h          # 文件描述符封装
 │   ├── log.h         # 日志系统
 │   └── task.h        # 协程任务类型
 ├── src/              # 源文件目录
 │   ├── async.cc      # 异步网络实现
 │   ├── excutor.cc    # 执行器实现
-│   ├── fd.cc         # 文件描述符实现
 │   └── log.cc        # 日志实现
 ├── test/             # 测试程序
 │   ├── echo_server.cc  # 回显服务器示例

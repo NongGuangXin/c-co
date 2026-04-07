@@ -27,6 +27,8 @@ target_link_libraries(echo_client PRIVATE c++co)
 add_executable(echo_client_mt test/echo_client_mt.cc)
 target_link_libraries(echo_client_mt PRIVATE c++co)
 
+add_executable(echo_client_buf test/echo_client_buf.cc)
+target_link_libraries(echo_client_buf PRIVATE c++co)
 
 add_executable(task_test test/task_test.cc)
 target_link_libraries(task_test PRIVATE c++co)

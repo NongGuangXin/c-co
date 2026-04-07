@@ -14,6 +14,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+void coro_read(FileDescriptor fd, std::vector<unsigned char>& buf) {
+    std::expected<size_t, int> result;
+
+    ssize_t n = ::read(fd.handle(), buf.data(), buf.size());
+    if(n < 0) {
+        result = std::unexpected(errno);
+    } else {
+        result = static_cast<size_t>(n);
+    }
+}
+
 class connection {
   public:
     connection() = default;
@@ -29,21 +40,121 @@ class connection {
         std::vector<unsigned char>& buf;
         std::expected<size_t, int>  result;
 
+        static constexpr size_t kChunkSize = 4096;
+        size_t                  total{0};
+
         bool await_ready() const noexcept {
             return false;
         }
 
-        void await_suspend(std::coroutine_handle<> h) {
+        void do_read(std::coroutine_handle<> h) {
             excutor::instance().register_event(
                 fd, excutor::READ, [this, h]() mutable {
-                    ssize_t n = ::read(fd.handle(), buf.data(), buf.size());
-                    if(n < 0) {
+                    for(;;) {
+                        if(buf.size() < total + kChunkSize) {
+                            buf.resize(total + kChunkSize);
+                        }
+
+                        ssize_t n = ::read(fd.handle(), buf.data() + total,
+                            buf.size() - total);
+
+                        if(n > 0) {
+                            total += static_cast<size_t>(n);
+                            continue;
+                        }
+
+                        if(n == 0) {
+                            buf.resize(total);
+                            result = n;
+                            h.resume();
+                            return;
+                        }
+
+                        // n < 0
+                        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                            if(total == 0) {
+                                do_read(h);
+                            } else {
+                                buf.resize(total);
+                                result = total;
+                                h.resume();
+                            }
+                            return;
+                        }
+
+                        buf.resize(total);
                         result = std::unexpected(errno);
-                    } else {
-                        result = static_cast<size_t>(n);
+                        h.resume();
+                        return;
                     }
-                    h.resume();
                 });
+        }
+
+        void await_suspend(std::coroutine_handle<> h) {
+            total = 0;
+            do_read(h);
+        }
+
+        std::expected<size_t, int> await_resume() {
+            return result;
+        }
+    };
+
+    // Awaitable for co_read_until: 持续读取直到填满 buf.size() 字节或对端关闭
+    struct read_until_awaitable {
+        FileDescriptor              fd;
+        std::vector<unsigned char>& buf;
+        size_t                      target;
+        size_t                      total{0};
+        std::expected<size_t, int>  result;
+
+        bool await_ready() const noexcept {
+            return false;
+        }
+
+        void do_read(std::coroutine_handle<> h) {
+            excutor::instance().register_event(
+                fd, excutor::READ, [this, h]() mutable {
+                    for(;;) {
+                        ssize_t n = ::read(
+                            fd.handle(), buf.data() + total, target - total);
+
+                        if(n > 0) {
+                            total += static_cast<size_t>(n);
+                            if(total >= target) {
+                                result = total;
+                                h.resume();
+                                return;
+                            }
+                            continue;
+                        }
+
+                        if(n == 0) {
+                            buf.resize(total);
+                            result = n;
+                            h.resume();
+                            return;
+                        }
+
+                        // n < 0
+                        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // 内核缓冲区暂时读空，重新注册等待更多数据
+                            do_read(h);
+                            return;
+                        }
+
+                        buf.resize(total);
+                        result = std::unexpected(errno);
+                        h.resume();
+                        return;
+                    }
+                });
+        }
+
+        void await_suspend(std::coroutine_handle<> h) {
+            target = buf.size();
+            total  = 0;
+            do_read(h);
         }
 
         std::expected<size_t, int> await_resume() {
@@ -92,8 +203,19 @@ class connection {
         }
     };
 
+    /**
+    * 返回值：
+    * 1. 成功：读取的字节数
+    * 2. 失败：错误码
+    * 3. 连接关闭：0
+        连接关闭或错误前读取的数据在buf中，可用size()获取实际读取长度
+     */
     read_awaitable co_read(std::vector<unsigned char>& buf) {
         return read_awaitable{fd_, buf, {}};
+    }
+
+    read_until_awaitable co_read_until(std::vector<unsigned char>& buf) {
+        return read_until_awaitable{fd_, buf, 0, 0, {}};
     }
 
     write_awaitable co_write(const std::vector<unsigned char>& buf) {

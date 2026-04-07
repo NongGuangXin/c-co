@@ -43,7 +43,7 @@ class ClangFormatFormatter:
         
         for root, dirs, files in os.walk(self.root_dir):
             # 跳过.git等隐藏目录
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'build']
             
             for file in files:
                 ext = Path(file).suffix.lower()
