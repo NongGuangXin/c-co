@@ -37,6 +37,7 @@ task<int> handle_client(connection conn) {
 
 task<int> server(acceptor& ac) {
     log::info("Echo server started, waiting for connections...");
+    log::set_level(log::Level::WARN);
 
     while(true) {
         connection conn = co_await ac.co_accept();

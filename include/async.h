@@ -4,26 +4,15 @@
 #include "log.h"
 
 #include <coroutine>
-#include <cstring>
 #include <expected>
 #include <vector>
+#include <cstring>
 
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-void coro_read(FileDescriptor fd, std::vector<unsigned char>& buf) {
-    std::expected<size_t, int> result;
-
-    ssize_t n = ::read(fd.handle(), buf.data(), buf.size());
-    if(n < 0) {
-        result = std::unexpected(errno);
-    } else {
-        result = static_cast<size_t>(n);
-    }
-}
+#include <fcntl.h>
 
 class connection {
   public:
@@ -48,46 +37,47 @@ class connection {
         }
 
         void do_read(std::coroutine_handle<> h) {
-            excutor::instance().register_event(
-                fd, excutor::READ, [this, h]() mutable {
-                    for(;;) {
-                        if(buf.size() < total + kChunkSize) {
-                            buf.resize(total + kChunkSize);
-                        }
+            auto read_cb = [this, h]() mutable {
+                for(;;) {
+                    if(buf.size() < total + kChunkSize) {
+                        buf.resize(total + kChunkSize);
+                    }
 
-                        ssize_t n = ::read(fd.handle(), buf.data() + total,
-                            buf.size() - total);
+                    ssize_t n = ::read(
+                        fd.handle(), buf.data() + total, buf.size() - total);
 
-                        if(n > 0) {
-                            total += static_cast<size_t>(n);
-                            continue;
-                        }
+                    if(n > 0) {
+                        total += static_cast<size_t>(n);
+                        continue;
+                    }
 
-                        if(n == 0) {
-                            buf.resize(total);
-                            result = n;
-                            h.resume();
-                            return;
-                        }
-
-                        // n < 0
-                        if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                            if(total == 0) {
-                                do_read(h);
-                            } else {
-                                buf.resize(total);
-                                result = total;
-                                h.resume();
-                            }
-                            return;
-                        }
-
+                    if(n == 0) {
                         buf.resize(total);
-                        result = std::unexpected(errno);
+                        result = n;
                         h.resume();
                         return;
                     }
-                });
+
+                    // n < 0
+                    if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                        if(total == 0) {
+                            do_read(h);
+                        } else {
+                            buf.resize(total);
+                            result = total;
+                            h.resume();
+                        }
+                        return;
+                    }
+
+                    buf.resize(total);
+                    result = std::unexpected(errno);
+                    h.resume();
+                    return;
+                }
+            };
+
+            excutor::instance().register_event(fd, excutor::READ, read_cb);
         }
 
         void await_suspend(std::coroutine_handle<> h) {
@@ -113,42 +103,43 @@ class connection {
         }
 
         void do_read(std::coroutine_handle<> h) {
-            excutor::instance().register_event(
-                fd, excutor::READ, [this, h]() mutable {
-                    for(;;) {
-                        ssize_t n = ::read(
-                            fd.handle(), buf.data() + total, target - total);
+            auto read_cb = [this, h]() mutable {
+                for(;;) {
+                    ssize_t n =
+                        ::read(fd.handle(), buf.data() + total, target - total);
 
-                        if(n > 0) {
-                            total += static_cast<size_t>(n);
-                            if(total >= target) {
-                                result = total;
-                                h.resume();
-                                return;
-                            }
-                            continue;
-                        }
-
-                        if(n == 0) {
-                            buf.resize(total);
-                            result = n;
+                    if(n > 0) {
+                        total += static_cast<size_t>(n);
+                        if(total >= target) {
+                            result = total;
                             h.resume();
                             return;
                         }
+                        continue;
+                    }
 
-                        // n < 0
-                        if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                            // 内核缓冲区暂时读空，重新注册等待更多数据
-                            do_read(h);
-                            return;
-                        }
-
+                    if(n == 0) {
                         buf.resize(total);
-                        result = std::unexpected(errno);
+                        result = n;
                         h.resume();
                         return;
                     }
-                });
+
+                    // n < 0
+                    if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // 内核缓冲区暂时读空，重新注册等待更多数据
+                        do_read(h);
+                        return;
+                    }
+
+                    buf.resize(total);
+                    result = std::unexpected(errno);
+                    h.resume();
+                    return;
+                }
+            };
+
+            excutor::instance().register_event(fd, excutor::READ, read_cb);
         }
 
         void await_suspend(std::coroutine_handle<> h) {
@@ -274,8 +265,7 @@ class acceptor {
 };
 
 // Free functions for creating connections
-acceptor   co_listen(int port);
-connection co_connect_sync(int port); // helper
+acceptor co_listen(int port);
 
 // Awaitable connect
 struct connect_awaitable {

@@ -34,8 +34,6 @@ struct task_promise_base {
                 // Coroutine owns itself - destroy frame here
                 // Must capture continuation before destroy
                 h.destroy();
-                if(cont) return cont;
-                return std::noop_coroutine();
             }
 
             if(cont) return cont;

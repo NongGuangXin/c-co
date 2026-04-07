@@ -1,6 +1,6 @@
 # C++ Coroutine 异步网络库
 
-这是一个基于 C++23 协程（Coroutine）的异步网络库（仅学习）
+这是一个基于 C++ 协程（Coroutine）的异步网络库（仅供学习）
 
 ## 特性
 
@@ -85,9 +85,6 @@ cmake --build build/
 ```bash
 # 任务测试
 ./build/task_test
-
-# 线程测试
-./build/thrd_test
 ```
 
 ## 核心组件说明
@@ -113,8 +110,16 @@ task<int> my_coroutine() {
 [`connection`](include/async.h) 封装了TCP操作：
 
 ```cpp
-task<std::expected<size_t, int>> co_read(std::vector<unsigned char>& buf);
-task<std::expected<size_t, int>> co_write(const std::vector<unsigned char>& buf);
+class connection {
+  public:
+    explicit operator bool() const noexcept；
+
+    read_awaitable co_read(std::vector<unsigned char>& buf);
+    read_until_awaitable co_read_until(std::vector<unsigned char>& buf);
+    write_awaitable co_write(const std::vector<unsigned char>& buf);
+}
+
+connect_awaitable co_connect(int port);
 ```
 
 ### 3. acceptor - 监听器
@@ -122,8 +127,13 @@ task<std::expected<size_t, int>> co_write(const std::vector<unsigned char>& buf)
 [`acceptor`](include/async.h) 用于监听和接受新连接：
 
 ```cpp
+class acceptor {
+  public:
+    operator bool() const；
+    accept_awaitable co_accept();
+}
+
 acceptor ac = co_listen(9999);   // 在端口9999监听
-task<connection> co_accept();    // 接受新连接
 ```
 
 ### 4. excutor - 执行器
@@ -134,14 +144,45 @@ task<connection> co_accept();    // 接受新连接
 - 调度协程任务的执行
 - 处理I/O事件的挂起和恢复
 
+```cpp
+class excutor {
+  public:
+    using task_t = std::function<void()>;
+
+    enum co_event {
+        READ,
+        WRITE,
+    };
+
+    static excutor& instance();
+
+    void execute(task_t task);
+    void register_event(const FileDescriptor& fd, co_event ev, task_t task);
+    void unregister_event(const FileDescriptor& fd);
+    std::future<R> submit(F&& f, Args&&... args);
+
+    static T sync_wait(task<T>&& t);
+    static void detach(task<T>&& t)
+}
+```
+
 ### 5. 日志系统
 
 [`log`](include/log.h) 提供分级日志功能：
 
 ```cpp
-log::set_level(log::Level::INFO);  // 设置日志级别
-log::info("Server started");        // 信息日志
-log::erro("Error: {}", errno);      // 错误日志
+class log {
+  public:
+    enum class Level : unsigned int { DBUG = 0, INFO, WARN, ERRO, STOP };
+
+    static void dbug(Fmt fmt, const auto&... args);
+    static void info(Fmt fmt, const auto&... args);
+    static void warn(Fmt fmt, const auto&... args);
+    static void erro(Fmt fmt, const auto&... args);
+
+    static void set_level(Level level);
+    static Level get_level();
+}
 ```
 
 ## 工作原理
@@ -195,7 +236,7 @@ log::erro("Error: {}", errno);      // 错误日志
 │                        excutor                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
 │  │  thrdLoop   │  │   epoller   │  │  task queue     │  │
-│  │ (线程池)     │  │ (epoll封装)  │  │ (任务队列)       │  │
+│  │ (线程池)     │ │ (epoll封装)  │  │ (任务队列)       │  │
 │  └─────────────┘  └─────────────┘  └─────────────────┘  │
 └─────────────────────────────────────────────────────────┘
                            ▲
@@ -207,10 +248,10 @@ log::erro("Error: {}", errno);      // 错误日志
 │    task<T>    │  │  connection   │  │   acceptor    │
 │  (协程任务)    │  │  (TCP连接)     │  │  (监听接受器)  │
 └───────────────┘  └───────────────┘  └───────────────┘
-        │                  │                  │
-        │    ┌─────────────┴─────────────┐    │
-        │    │                           │    │
-        ▼    ▼                           ▼    ▼
+                           │                  │
+             ┌───server────┴─────client──┐    │
+             │                           │    │
+             ▼                           ▼    ▼
    ┌─────────────────────────────────────────────────┐
    │              FileDescriptor                     │
    │              (文件描述符封装)                     │
@@ -219,7 +260,7 @@ log::erro("Error: {}", errno);      // 错误日志
 
 ## 示例代码
 
-见`test`目录下[`echo_client.cc`](test/echo_client.cc) 和[`echo_server.cc`](test/echo_server.cc) 
+见`test`目录下测试代码
 
 ## 编译选项
 
@@ -234,14 +275,14 @@ log::erro("Error: {}", errno);      // 错误日志
 
 ## 注意事项
 
-1. **C++23 要求**：确保编译器支持 C++23 协程特性
+1. **C++23 要求**：需要支持协程和expected
 2. **Linux 系统**：使用了 Linux 特有的 epoll 机制
-3. **单线程**：当前实现使用单epoll线程和但IO处理线程
+3. **多线程**：当前实现使用多epoll线程和多IO处理线程
 4. **同步等待**：`sync_wait` 会阻塞当前线程直到协程完成
 
 ## TODO
-- ☐ 多epoll线程和多IO线程
-- ☐ 更详尽的测试
+- ☑ 多epoll线程和多IO线程
+- ☑ 更详尽的测试
 - ☑ 基础设施和echo Demo
 
 ## 许可证

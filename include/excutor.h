@@ -59,7 +59,7 @@ class excutor {
         WRITE,
     };
 
-    static constexpr size_t DEFAULT_EPOLL_THREADS  = 2;
+    static constexpr size_t DEFAULT_EPOLL_THREADS  = 4;
     static constexpr size_t DEFAULT_WORKER_THREADS = 8;
 
     static excutor& instance();

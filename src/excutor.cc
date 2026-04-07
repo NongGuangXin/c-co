@@ -76,7 +76,7 @@ void excutor::register_event(
 
     struct epoll_event epev{};
     epev.events = (ev == READ) ? EPOLLIN : EPOLLOUT;
-    epev.events |= EPOLLONESHOT;
+    epev.events |= EPOLLONESHOT | EPOLLET;
     epev.data.fd = raw_fd;
 
     // 先插入 callback 再注册 epoll，确保事件触发时 callback 已就绪
