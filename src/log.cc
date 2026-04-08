@@ -12,7 +12,7 @@
 
 std::string_view Fmt::file_name() noexcept {
     std::string_view sv{_loc.file_name()};
-    size_t           pos = sv.find_last_of('/');
+    size_t pos = sv.find_last_of('/');
     if(pos == std::string_view::npos) return sv;
     return sv.substr(pos + 1);
 }
@@ -66,7 +66,7 @@ std::string format_timestamp() {
 
 const std::string_view level_to_string(Level level) {
     static constexpr std::array<std::string_view, 4> level_str = {
-        "debug", "info", "warn", "error"};
+        "dbug", "info", "warn", "erro"};
 
     return level_str[static_cast<size_t>(level)];
 }

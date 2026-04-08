@@ -2,9 +2,25 @@
 #include "log.h"
 
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <unistd.h>
 #include <sys/epoll.h>
+
+// 绑定线程到指定CPU核心
+void bind_thread_to_cpu(std::thread& t, int cpu_id) {
+    static unsigned int num_cpus = std::thread::hardware_concurrency();
+    cpu_id                       = cpu_id % num_cpus;
+
+    pthread_t pthread = t.native_handle();
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+
+    int rc = pthread_setaffinity_np(pthread, sizeof(cpu_set_t), &cpuset);
+    if(rc != 0) { log::erro("pthread_setaffinity_np error: {}", rc); }
+}
 
 excutor& excutor::instance() {
     static excutor inst;
@@ -12,8 +28,10 @@ excutor& excutor::instance() {
 }
 
 excutor::excutor() {
+    static size_t num_cpus = std::thread::hardware_concurrency();
+
     // 创建多个 epoll 实例
-    for(size_t i = 0; i < DEFAULT_EPOLL_THREADS; i++) {
+    for(size_t i = 0; i < num_cpus; i++) {
         auto ep      = std::make_unique<epoll_instance>();
         ep->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
         if(ep->epoll_fd < 0) {
@@ -25,8 +43,9 @@ excutor::excutor() {
     }
 
     // 启动 epoll 事件线程
-    for(size_t i = 0; i < DEFAULT_EPOLL_THREADS; i++) {
+    for(size_t i = 0; i < num_cpus; i++) {
         epoll_threads_.emplace_back([this, i]() { epoll_loop(i); });
+        bind_thread_to_cpu(epoll_threads_.back(), i);
     }
 
     // 启动 worker 线程池
@@ -34,8 +53,8 @@ excutor::excutor() {
         worker_threads_.emplace_back([this]() { worker_loop(); });
     }
 
-    log::dbug("excutor created: {} epoll threads, {} worker threads",
-        DEFAULT_EPOLL_THREADS, DEFAULT_WORKER_THREADS);
+    log::dbug("excutor created: {} epoll threads, {} worker threads", num_cpus,
+        DEFAULT_WORKER_THREADS);
 }
 
 excutor::~excutor() {
@@ -67,9 +86,9 @@ size_t excutor::fd_to_epoll_index(int fd) const {
 
 void excutor::register_event(
     const FileDescriptor& fd, co_event ev, task_t task) {
-    int    raw_fd = fd.handle();
-    size_t idx    = fd_to_epoll_index(raw_fd);
-    auto&  ep     = *epollers_[idx];
+    int raw_fd = fd.handle();
+    size_t idx = fd_to_epoll_index(raw_fd);
+    auto& ep   = *epollers_[idx];
 
     log::dbug("register_event fd={} ev={} epoll[{}]", raw_fd,
         ev == READ ? "READ" : "WRITE", idx);
@@ -107,7 +126,7 @@ void excutor::register_event(
         task_t cb;
         {
             std::lock_guard lock(ep.mutex);
-            auto            it = ep.callbacks.find(raw_fd);
+            auto it = ep.callbacks.find(raw_fd);
             if(it != ep.callbacks.end()) {
                 cb = std::move(it->second);
                 ep.callbacks.erase(it);
@@ -121,9 +140,9 @@ void excutor::register_event(
 }
 
 void excutor::unregister_event(const FileDescriptor& fd) {
-    int    raw_fd = fd.handle();
-    size_t idx    = fd_to_epoll_index(raw_fd);
-    auto&  ep     = *epollers_[idx];
+    int raw_fd = fd.handle();
+    size_t idx = fd_to_epoll_index(raw_fd);
+    auto& ep   = *epollers_[idx];
 
     log::dbug("unregister_event fd={} epoll[{}]", raw_fd, idx);
 
@@ -134,9 +153,9 @@ void excutor::unregister_event(const FileDescriptor& fd) {
 }
 
 void excutor::epoll_loop(size_t index) {
-    constexpr int      MAX_EVENTS = 64;
+    constexpr int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
-    auto&              ep = *epollers_[index];
+    auto& ep = *epollers_[index];
 
     while(running_) {
         int n = ::epoll_wait(ep.epoll_fd, events, MAX_EVENTS, 100);
@@ -148,19 +167,20 @@ void excutor::epoll_loop(size_t index) {
         }
 
         for(int i = 0; i < n; i++) {
-            int    fd = events[i].data.fd;
+            int fd = events[i].data.fd;
             task_t cb;
             {
                 std::lock_guard lock(ep.mutex);
-                auto            it = ep.callbacks.find(fd);
+                auto it = ep.callbacks.find(fd);
                 if(it != ep.callbacks.end()) {
                     cb = std::move(it->second);
                     ep.callbacks.erase(it);
                 }
             }
             if(cb) {
-                // 将 IO 回调投递到线程池执行，避免阻塞 epoll 线程
-                execute(std::move(cb));
+                // 将IO回调投递到线程池执行，可以避免阻塞epoll线程,
+                // 但是IO性能会降低 execute(std::move(cb));
+                cb();
             }
         }
     }

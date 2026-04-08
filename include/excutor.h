@@ -59,8 +59,7 @@ class excutor {
         WRITE,
     };
 
-    static constexpr size_t DEFAULT_EPOLL_THREADS  = 4;
-    static constexpr size_t DEFAULT_WORKER_THREADS = 8;
+    static constexpr size_t DEFAULT_WORKER_THREADS = 2;
 
     static excutor& instance();
 
@@ -92,7 +91,7 @@ class excutor {
     template <typename T>
     static T sync_wait(task<T>&& t) {
         std::promise<T> promise;
-        auto            future = promise.get_future();
+        auto future = promise.get_future();
 
         auto wrapper = [](task<T> inner, std::promise<T> p) -> task<void> {
             try {
@@ -142,8 +141,8 @@ class excutor {
 
     // 每个 epoll 实例的数据
     struct epoll_instance {
-        int                             epoll_fd{-1};
-        std::mutex                      mutex;
+        int epoll_fd{-1};
+        std::mutex mutex;
         std::unordered_map<int, task_t> callbacks;
     };
 
@@ -158,11 +157,11 @@ class excutor {
 
     // 多 epoll 实例
     std::vector<std::unique_ptr<epoll_instance>> epollers_;
-    std::vector<std::thread>                     epoll_threads_;
+    std::vector<std::thread> epoll_threads_;
 
     // 线程池
     std::vector<std::thread> worker_threads_;
-    std::mutex               queue_mutex_;
-    std::condition_variable  queue_cv_;
-    std::queue<task_t>       task_queue_;
+    std::condition_variable queue_cv_;
+    std::queue<task_t> task_queue_;
+    std::mutex queue_mutex_;
 };

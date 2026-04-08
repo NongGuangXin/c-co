@@ -13,7 +13,7 @@ AlignConsecutiveAssignments: Consecutive
 # 连续位域对齐(11)
 AlignConsecutiveBitFields: Consecutive
 # 连续声明对齐
-AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveDeclarations: None
 # 反斜杠换行符对齐
 AlignEscapedNewlines: Left
 # 操作符对齐

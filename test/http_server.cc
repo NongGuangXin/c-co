@@ -4,40 +4,36 @@
 
 #include <csignal>
 #include <cstdlib>
+#include <string>
+
+static const std::string http_response = "HTTP/1.1 200 OK\r\n"
+                                         "Content-Type: text/plain\r\n"
+                                         "Content-Length: 13\r\n"
+                                         "Connection: close\r\n"
+                                         "\r\n"
+                                         "Hello, World!";
+
+static const std::vector<unsigned char> response_bytes(
+    http_response.begin(), http_response.end());
 
 task<int> handle_client(connection conn) {
     std::vector<unsigned char> buffer(4096);
 
-    while(true) {
-        auto read_result = co_await conn.co_read(buffer);
-        if(!read_result.has_value()) {
-            log::erro("read error:{}", read_result.error());
-            break;
-        }
+    // Read the request (just consume it)
+    auto read_result = co_await conn.co_read(buffer);
+    if(!read_result.has_value() || read_result.value() == 0) { co_return -1; }
 
-        size_t bytes_read = read_result.value();
-        if(bytes_read == 0) {
-            log::info("client disconnected\n");
-            break;
-        }
-        log::info("read {} byte from client", bytes_read);
-
-        std::vector<unsigned char> response(
-            buffer.begin(), buffer.begin() + bytes_read);
-        auto write_result = co_await conn.co_write(response);
-        if(!write_result.has_value()) {
-            log::erro("write error:{}", write_result.error());
-            break;
-        }
-
-        // log::info("Echoed {} byte to client\n", bytes_read);
+    // Write the HTTP response
+    auto write_result = co_await conn.co_write(response_bytes);
+    if(!write_result.has_value()) {
+        log::erro("write error:{}", write_result.error());
     }
 
     co_return 0;
 }
 
 task<int> server(acceptor& ac) {
-    log::info("Echo server started, waiting for connections...");
+    log::info("Http server started, waiting for connections...");
     log::set_level(log::Level::WARN);
 
     while(true) {

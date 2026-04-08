@@ -16,7 +16,7 @@ task<int> echo_client(int port) {
     log::info("Connected to server successfully");
 
     // 发送消息
-    std::string_view           message = "Hello, Echo Server!";
+    std::string_view message = "Hello, Echo Server!";
     std::vector<unsigned char> send_data(message.begin(), message.end());
 
     auto write_result = co_await conn.co_write(send_data);
@@ -29,7 +29,7 @@ task<int> echo_client(int port) {
 
     // 接收回显
     std::vector<unsigned char> buffer(4096);
-    auto                       read_result = co_await conn.co_read(buffer);
+    auto read_result = co_await conn.co_read(buffer);
 
     if(!read_result.has_value()) {
         log::erro("Read error: {}", read_result.error());
@@ -58,7 +58,7 @@ task<int> echo_client(int port) {
         log::info("Sent: {}", msg);
 
         std::vector<unsigned char> recv_buf(4096);
-        auto                       rr = co_await conn.co_read(recv_buf);
+        auto rr = co_await conn.co_read(recv_buf);
         if(!rr.has_value()) {
             log::erro("Read error: {}", rr.error());
             break;

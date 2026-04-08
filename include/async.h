@@ -1,18 +1,10 @@
 #pragma once
 
 #include "excutor.h"
-#include "log.h"
 
 #include <coroutine>
 #include <expected>
 #include <vector>
-#include <cstring>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <fcntl.h>
 
 class connection {
   public:
@@ -25,173 +17,53 @@ class connection {
 
     // Awaitable for co_read
     struct read_awaitable {
-        FileDescriptor              fd;
+        FileDescriptor fd;
         std::vector<unsigned char>& buf;
-        std::expected<size_t, int>  result;
+        std::expected<size_t, int> result;
 
         static constexpr size_t kChunkSize = 4096;
-        size_t                  total{0};
+        size_t total{0};
 
-        bool await_ready() const noexcept {
-            return false;
-        }
+        // 尝试立即读取，返回 true 表示需要继续挂起等待
+        bool try_read();
+        void do_read(std::coroutine_handle<> h);
 
-        void do_read(std::coroutine_handle<> h) {
-            auto read_cb = [this, h]() mutable {
-                for(;;) {
-                    if(buf.size() < total + kChunkSize) {
-                        buf.resize(total + kChunkSize);
-                    }
-
-                    ssize_t n = ::read(
-                        fd.handle(), buf.data() + total, buf.size() - total);
-
-                    if(n > 0) {
-                        total += static_cast<size_t>(n);
-                        continue;
-                    }
-
-                    if(n == 0) {
-                        buf.resize(total);
-                        result = n;
-                        h.resume();
-                        return;
-                    }
-
-                    // n < 0
-                    if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                        if(total == 0) {
-                            do_read(h);
-                        } else {
-                            buf.resize(total);
-                            result = total;
-                            h.resume();
-                        }
-                        return;
-                    }
-
-                    buf.resize(total);
-                    result = std::unexpected(errno);
-                    h.resume();
-                    return;
-                }
-            };
-
-            excutor::instance().register_event(fd, excutor::READ, read_cb);
-        }
-
-        void await_suspend(std::coroutine_handle<> h) {
-            total = 0;
-            do_read(h);
-        }
-
-        std::expected<size_t, int> await_resume() {
-            return result;
-        }
+        bool await_ready() const noexcept;
+        bool await_suspend(std::coroutine_handle<> h);
+        std::expected<size_t, int> await_resume();
     };
 
     // Awaitable for co_read_until: 持续读取直到填满 buf.size() 字节或对端关闭
     struct read_until_awaitable {
-        FileDescriptor              fd;
+        size_t target;
+        size_t total;
+        FileDescriptor fd;
         std::vector<unsigned char>& buf;
-        size_t                      target;
-        size_t                      total{0};
-        std::expected<size_t, int>  result;
+        std::expected<size_t, int> result;
 
-        bool await_ready() const noexcept {
-            return false;
-        }
+        // 尝试立即读取，返回 true 表示需要挂起
+        bool try_read();
+        void do_read(std::coroutine_handle<> h);
 
-        void do_read(std::coroutine_handle<> h) {
-            auto read_cb = [this, h]() mutable {
-                for(;;) {
-                    ssize_t n =
-                        ::read(fd.handle(), buf.data() + total, target - total);
-
-                    if(n > 0) {
-                        total += static_cast<size_t>(n);
-                        if(total >= target) {
-                            result = total;
-                            h.resume();
-                            return;
-                        }
-                        continue;
-                    }
-
-                    if(n == 0) {
-                        buf.resize(total);
-                        result = n;
-                        h.resume();
-                        return;
-                    }
-
-                    // n < 0
-                    if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                        // 内核缓冲区暂时读空，重新注册等待更多数据
-                        do_read(h);
-                        return;
-                    }
-
-                    buf.resize(total);
-                    result = std::unexpected(errno);
-                    h.resume();
-                    return;
-                }
-            };
-
-            excutor::instance().register_event(fd, excutor::READ, read_cb);
-        }
-
-        void await_suspend(std::coroutine_handle<> h) {
-            target = buf.size();
-            total  = 0;
-            do_read(h);
-        }
-
-        std::expected<size_t, int> await_resume() {
-            return result;
-        }
+        bool await_ready() const noexcept;
+        bool await_suspend(std::coroutine_handle<> h);
+        std::expected<size_t, int> await_resume();
     };
 
     // Awaitable for co_write (handles short writes)
     struct write_awaitable {
-        FileDescriptor                    fd;
+        FileDescriptor fd;
         const std::vector<unsigned char>& buf;
-        size_t                            written{0};
-        std::expected<size_t, int>        result;
+        size_t written;
+        std::expected<size_t, int> result;
 
-        bool await_ready() const noexcept {
-            return false;
-        }
+        // 尝试立即写入，返回 true 表示需要挂起
+        bool try_write();
+        void do_write(std::coroutine_handle<> h);
 
-        void do_write(std::coroutine_handle<> h) {
-            excutor::instance().register_event(
-                fd, excutor::WRITE, [this, h]() mutable {
-                    ssize_t n = ::write(fd.handle(), buf.data() + written,
-                        buf.size() - written);
-                    if(n < 0) {
-                        result = std::unexpected(errno);
-                        h.resume();
-                        return;
-                    }
-                    written += static_cast<size_t>(n);
-                    if(written < buf.size()) {
-                        // 短写，继续注册等待可写
-                        do_write(h);
-                    } else {
-                        result = written;
-                        h.resume();
-                    }
-                });
-        }
-
-        void await_suspend(std::coroutine_handle<> h) {
-            do_write(h);
-        }
-
-        std::expected<size_t, int> await_resume() {
-            return result;
-        }
+        bool await_ready() const noexcept;
+        bool await_suspend(std::coroutine_handle<> h);
+        std::expected<size_t, int> await_resume();
     };
 
     /**
@@ -206,7 +78,7 @@ class connection {
     }
 
     read_until_awaitable co_read_until(std::vector<unsigned char>& buf) {
-        return read_until_awaitable{fd_, buf, 0, 0, {}};
+        return read_until_awaitable{0, 0, fd_, buf, {}};
     }
 
     write_awaitable co_write(const std::vector<unsigned char>& buf) {
@@ -227,64 +99,37 @@ class acceptor {
     }
 
     struct accept_awaitable {
+        connection result;
         FileDescriptor fd;
-        connection     result;
 
-        bool await_ready() const noexcept {
-            return false;
-        }
+        bool try_accept();
 
-        void await_suspend(std::coroutine_handle<> h) {
-            excutor::instance().register_event(
-                fd, excutor::READ, [this, h]() mutable {
-                    struct sockaddr_in addr;
-                    socklen_t          len       = sizeof(addr);
-                    int                client_fd = ::accept4(fd.handle(),
-                                       reinterpret_cast<struct sockaddr*>(&addr), &len,
-                                       SOCK_NONBLOCK | SOCK_CLOEXEC);
-                    if(client_fd < 0) {
-                        log::erro("accept4 failed: {}", std::strerror(errno));
-                    } else {
-                        result = connection(FileDescriptor(client_fd));
-                    }
-                    h.resume();
-                });
-        }
-
-        connection await_resume() {
-            return std::move(result);
-        }
+        bool await_ready() const noexcept;
+        bool await_suspend(std::coroutine_handle<> h);
+        connection await_resume();
     };
 
     accept_awaitable co_accept() {
-        return accept_awaitable{fd_, {}};
+        return accept_awaitable{{}, fd_};
     }
 
   private:
     FileDescriptor fd_;
 };
 
-// Free functions for creating connections
-acceptor co_listen(int port);
-
 // Awaitable connect
 struct connect_awaitable {
-    int        port;
+    int port;
     connection result;
-    bool       ready{false};
 
-    bool await_ready() const noexcept {
-        return ready;
-    }
-
-    // 返回 bool: true 表示不挂起（立即完成），false 表示挂起等待 epoll
+    bool await_ready() const noexcept;
     bool await_suspend(std::coroutine_handle<> h);
-
-    connection await_resume() {
-        return std::move(result);
-    }
+    connection await_resume();
 };
 
 inline connect_awaitable co_connect(int port) {
     return connect_awaitable{port, {}};
 }
+
+// Free functions for creating connections
+acceptor co_listen(int port);

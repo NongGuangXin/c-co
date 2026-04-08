@@ -85,6 +85,12 @@ cmake --build build/
 ```bash
 # 任务测试
 ./build/task_test
+
+./build/echo_client_mt
+
+# for i in $(seq 1 50); do timeout 2 ./build/echo_client_buf 2>&1 > /dev/null; done && echo "50次运行完成，无卡死"
+
+ab -c 100 -n 100000 http://127.0.0.1:9999/
 ```
 
 ## 核心组件说明

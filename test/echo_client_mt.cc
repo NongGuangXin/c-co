@@ -16,12 +16,12 @@
 // ------------------------------
 // 配置参数（可修改）
 // ------------------------------
-constexpr const char* SERVER_IP             = "127.0.0.1"; // 服务器IP
-constexpr uint16_t    SERVER_PORT           = 9999;        // 服务器端口
-static int            NUM_CONNECTIONS       = 50;          // 并发连接数
-constexpr int         NUM_MESSAGES_PER_CONN = 5;    // 每个连接发送的消息数
-constexpr int         BUFFER_SIZE           = 1024; // 缓冲区大小
-constexpr int         TIMEOUT_SEC           = 5;    // 读写超时时间（秒）
+constexpr const char* SERVER_IP     = "127.0.0.1"; // 服务器IP
+constexpr uint16_t SERVER_PORT      = 9999;        // 服务器端口
+static int NUM_CONNECTIONS          = 50;          // 并发连接数
+constexpr int NUM_MESSAGES_PER_CONN = 5;           // 每个连接发送的消息数
+constexpr int BUFFER_SIZE           = 1024;        // 缓冲区大小
+constexpr int TIMEOUT_SEC           = 5;           // 读写超时时间（秒）
 
 // ------------------------------
 // 全局线程安全计数器（用于生成唯一消息ID）
@@ -63,7 +63,7 @@ bool set_socket_nonblocking_and_timeout(int fd, int timeout_sec) {
 // 单个连接的工作函数
 // ------------------------------
 void echo_client_worker(int conn_id) {
-    int  sock_fd   = -1;
+    int sock_fd    = -1;
     bool connected = false;
 
     // ------------------------------
@@ -120,8 +120,8 @@ void echo_client_worker(int conn_id) {
         }
 
         // 检查socket是否真的连接成功（getsockopt获取SO_ERROR）
-        int       error = 0;
-        socklen_t len   = sizeof(error);
+        int error     = 0;
+        socklen_t len = sizeof(error);
         if(getsockopt(sock_fd, SOL_SOCKET, SO_ERROR, &error, &len) == -1 ||
             error != 0) {
             std::cerr << "[Worker] connect failed: " << strerror(error)
@@ -132,8 +132,9 @@ void echo_client_worker(int conn_id) {
     }
 
     connected = true;
-    std::cout << "[Worker " << conn_id << "] connected to server successfully"
-              << std::endl;
+    // std::cout << "[Worker " << conn_id << "] connected to server
+    // successfully"
+    //           << std::endl;
 
     // ------------------------------
     // 4. 发送+接收消息（循环NUM_MESSAGES_PER_CONN次）
@@ -164,7 +165,7 @@ void echo_client_worker(int conn_id) {
             } else if(sent == -1) {
                 if(errno == EAGAIN || errno == EWOULDBLOCK) {
                     // 非阻塞发送缓冲区满，等待一下
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 } else {
                     perror("[Worker] write failed");
@@ -176,14 +177,14 @@ void echo_client_worker(int conn_id) {
                 goto cleanup;
             }
         }
-        std::cout << "[Worker " << conn_id << "] sent: " << send_buf
-                  << std::endl;
+        // std::cout << "[Worker " << conn_id << "] sent: " << send_buf
+        //           << std::endl;
 
         // ------------------------------
         // 接收消息（非阻塞read，需循环直到收完echo的消息）
         // ------------------------------
-        size_t total_recv   = 0;
-        bool   recv_success = false;
+        size_t total_recv = 0;
+        bool recv_success = false;
         while(total_recv < send_len) {
             ssize_t recv = read(
                 sock_fd, recv_buf + total_recv, BUFFER_SIZE - 1 - total_recv);
@@ -197,7 +198,7 @@ void echo_client_worker(int conn_id) {
             } else if(recv == -1) {
                 if(errno == EAGAIN || errno == EWOULDBLOCK) {
                     // 非阻塞接收缓冲区空，等待一下
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 } else {
                     perror("[Worker] read failed");
@@ -211,16 +212,16 @@ void echo_client_worker(int conn_id) {
         }
 
         if(recv_success) {
-            std::cout << "[Worker " << conn_id << "] received: " << recv_buf
-                      << std::endl;
+            // std::cout << "[Worker " << conn_id << "] received: " << recv_buf
+            //           << std::endl;
         } else {
             std::cerr << "[Worker] failed to receive complete echo message"
                       << std::endl;
         }
 
         // 清空缓冲区
-        memset(send_buf, 0, BUFFER_SIZE);
-        memset(recv_buf, 0, BUFFER_SIZE);
+        // memset(send_buf, 0, BUFFER_SIZE);
+        // memset(recv_buf, 0, BUFFER_SIZE);
     }
 
 cleanup:
@@ -228,8 +229,8 @@ cleanup:
     // 5. 关闭socket
     // ------------------------------
     if(connected) {
-        std::cout << "[Worker " << conn_id << "] disconnecting from server"
-                  << std::endl;
+        // std::cout << "[Worker " << conn_id << "] disconnecting from server"
+        //           << std::endl;
     }
     if(sock_fd != -1) { close(sock_fd); }
 }
@@ -238,14 +239,14 @@ cleanup:
 // 主函数
 // ------------------------------
 int main(int argc, char* argv[]) {
+    if(argc == 2) { NUM_CONNECTIONS = std::stoi(argv[1]); }
+
     std::cout << "=== C++20 Multi-Threaded TCP Echo Client ===" << std::endl;
     std::cout << "Server: " << SERVER_IP << ":" << SERVER_PORT << std::endl;
     std::cout << "Concurrent connections: " << NUM_CONNECTIONS << std::endl;
     std::cout << "Messages per connection: " << NUM_MESSAGES_PER_CONN
               << std::endl;
     std::cout << "===============================================" << std::endl;
-
-    if(argc == 2) { NUM_CONNECTIONS = std::stoi(argv[1]); }
 
     std::cout << "NUM_CONNECTIONS: " << NUM_CONNECTIONS << std::endl;
     std::cout << "NUM_MESSAGES_PER_CONN: " << NUM_MESSAGES_PER_CONN

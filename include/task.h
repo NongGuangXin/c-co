@@ -12,8 +12,8 @@ namespace detail {
 
 struct task_promise_base {
     std::coroutine_handle<> continuation_{nullptr};
-    std::exception_ptr      exception_{nullptr};
-    bool                    self_destroy_{false};
+    std::exception_ptr exception_{nullptr};
+    bool self_destroy_{false};
 
     auto initial_suspend() noexcept {
         return std::suspend_always{};
@@ -28,7 +28,7 @@ struct task_promise_base {
         std::coroutine_handle<> await_suspend(
             std::coroutine_handle<Promise> h) noexcept {
             auto& promise = h.promise();
-            auto  cont    = promise.continuation_;
+            auto cont     = promise.continuation_;
 
             if(promise.self_destroy_) {
                 // Coroutine owns itself - destroy frame here

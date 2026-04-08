@@ -13,12 +13,12 @@ class Fmt final {
     requires std::constructible_from<std::string_view, T>
     Fmt(T fmt, const sloc& loc = sloc::current()): _fmt(fmt), _loc(loc) { }
 
-    size_t           line() noexcept;
+    size_t line() noexcept;
     std::string_view file_name() noexcept;
     std::string_view str() noexcept;
 
   private:
-    std::string_view           _fmt;
+    std::string_view _fmt;
     const std::source_location _loc;
 };
 
@@ -77,9 +77,9 @@ class log {
     struct impl {
         void write(Level level, std::string_view str);
 
-        bool  check(Level level);
+        bool check(Level level);
         Level get_level();
-        void  set_level(Level level);
+        void set_level(Level level);
 
         impl();
     };
