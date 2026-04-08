@@ -11,13 +11,17 @@
 #include <fcntl.h>
 
 // -----------------------------------------------------------------------
+// read_awaitable: 使用 io_uring recv 读取一次可用数据
+// -----------------------------------------------------------------------
 
-// false - 就绪
 bool connection::read_awaitable::try_read() {
+    // 快速路径：尝试立即非阻塞读取
+    size_t total = 0;
     for(;;) {
         if(buf.size() < total + kChunkSize) { buf.resize(total + kChunkSize); }
 
-        ssize_t n = ::read(fd.handle(), buf.data() + total, buf.size() - total);
+        ssize_t n = ::recv(
+            fd.handle(), buf.data() + total, buf.size() - total, MSG_DONTWAIT);
 
         if(n > 0) {
             total += static_cast<size_t>(n);
@@ -26,8 +30,8 @@ bool connection::read_awaitable::try_read() {
 
         if(n == 0) {
             buf.resize(total);
-            result = n;
-            return false; // 连接关闭，数据就绪
+            result = static_cast<size_t>(0);
+            return false; // EOF，数据就绪
         }
 
         // n < 0
@@ -42,64 +46,29 @@ bool connection::read_awaitable::try_read() {
 
         buf.resize(total);
         result = std::unexpected(errno);
-        return false; // 出错，数据就绪（含错误）
+        return false; // 出错
     }
 }
 
-void connection::read_awaitable::do_read(std::coroutine_handle<> h) {
-    auto read_cb = [this, h]() mutable {
-        for(;;) {
-            if(buf.size() < total + kChunkSize) {
-                buf.resize(total + kChunkSize);
-            }
-
-            ssize_t n =
-                ::read(fd.handle(), buf.data() + total, buf.size() - total);
-
-            if(n > 0) {
-                total += static_cast<size_t>(n);
-                continue;
-            }
-
-            if(n == 0) {
-                buf.resize(total);
-                result = n;
-                h.resume();
-                return;
-            }
-
-            // n < 0
-            if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                if(total == 0) {
-                    do_read(h);
-                } else {
-                    buf.resize(total);
-                    result = total;
-                    h.resume();
-                }
-                return;
-            }
-
-            buf.resize(total);
-            result = std::unexpected(errno);
-            h.resume();
-            return;
-        }
-    };
-
-    excutor::instance().register_event(fd, excutor::READ, read_cb);
-}
-
-// 返回 true-不挂起，false-挂起等待
 bool connection::read_awaitable::await_ready() const noexcept {
     return false;
 }
 
-// 返回 true-挂起，false-不挂起
 bool connection::read_awaitable::await_suspend(std::coroutine_handle<> h) {
-    total = 0;
-    if(try_read() == false) { return false; }
-    do_read(h);
+    excutor::instance().async_recv(
+        fd.handle(), buf.data(), buf.size(), 0, [this, h](int res) mutable {
+            if(res > 0) {
+                buf.resize(static_cast<size_t>(res));
+                result = static_cast<size_t>(res);
+            } else if(res == 0) {
+                buf.resize(0);
+                result = static_cast<size_t>(0);
+            } else {
+                buf.resize(0);
+                result = std::unexpected(-res);
+            }
+            h.resume();
+        });
     return true;
 }
 
@@ -107,30 +76,33 @@ std::expected<size_t, int> connection::read_awaitable::await_resume() {
     return result;
 }
 
-// -----------------------------------
+// -----------------------------------------------------------------------
+// read_until_awaitable: 持续读取直到填满 target 字节
+// -----------------------------------------------------------------------
 
 bool connection::read_until_awaitable::try_read() {
     for(;;) {
-        ssize_t n = ::read(fd.handle(), buf.data() + total, target - total);
+        ssize_t n = ::recv(
+            fd.handle(), buf.data() + total, target - total, MSG_DONTWAIT);
 
         if(n > 0) {
             total += static_cast<size_t>(n);
             if(total >= target) {
                 result = total;
-                return false; // 已读满，无需挂起
+                return false; // 已读满
             }
             continue;
         }
 
         if(n == 0) {
             buf.resize(total);
-            result = n;
+            result = static_cast<size_t>(0);
             return false;
         }
 
         // n < 0
         if(errno == EAGAIN || errno == EWOULDBLOCK) {
-            return true; // 需要挂起等更多数据
+            return true; // 需要挂起
         }
 
         buf.resize(total);
@@ -140,41 +112,32 @@ bool connection::read_until_awaitable::try_read() {
 }
 
 void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
-    auto read_cb = [this, h]() mutable {
-        for(;;) {
-            ssize_t n = ::read(fd.handle(), buf.data() + total, target - total);
-
-            if(n > 0) {
-                total += static_cast<size_t>(n);
+    excutor::instance().async_recv(fd.handle(), buf.data() + total,
+        target - total, 0, [this, h](int res) mutable {
+            if(res > 0) {
+                total += static_cast<size_t>(res);
                 if(total >= target) {
                     result = total;
                     h.resume();
                     return;
                 }
-                continue;
-            }
-
-            if(n == 0) {
-                buf.resize(total);
-                result = n;
-                h.resume();
-                return;
-            }
-
-            // n < 0
-            if(errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 未读满，继续提交
                 do_read(h);
                 return;
             }
 
-            buf.resize(total);
-            result = std::unexpected(errno);
-            h.resume();
-            return;
-        }
-    };
+            if(res == 0) {
+                buf.resize(total);
+                result = static_cast<size_t>(0);
+                h.resume();
+                return;
+            }
 
-    excutor::instance().register_event(fd, excutor::READ, read_cb);
+            // 错误
+            buf.resize(total);
+            result = std::unexpected(-res);
+            h.resume();
+        });
 }
 
 bool connection::read_until_awaitable::await_ready() const noexcept {
@@ -185,7 +148,7 @@ bool connection::read_until_awaitable::await_suspend(
     std::coroutine_handle<> h) {
     target = buf.size();
     total  = 0;
-    if(try_read() == false) { return false; }
+
     do_read(h);
     return true;
 }
@@ -194,12 +157,14 @@ std::expected<size_t, int> connection::read_until_awaitable::await_resume() {
     return result;
 }
 
-// -----------------------------------
+// -----------------------------------------------------------------------
+// write_awaitable: 使用 io_uring send 写入全部数据（处理短写）
+// -----------------------------------------------------------------------
 
 bool connection::write_awaitable::try_write() {
     while(written < buf.size()) {
-        ssize_t n =
-            ::write(fd.handle(), buf.data() + written, buf.size() - written);
+        ssize_t n = ::send(fd.handle(), buf.data() + written,
+            buf.size() - written, MSG_DONTWAIT | MSG_NOSIGNAL);
         if(n < 0) {
             if(errno == EAGAIN || errno == EWOULDBLOCK) {
                 return true; // 写缓冲区满，需要挂起
@@ -210,26 +175,25 @@ bool connection::write_awaitable::try_write() {
         written += static_cast<size_t>(n);
     }
     result = written;
-    return false; // 全部写完，无需挂起
+    return false; // 全部写完
 }
 
 void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
-    excutor::instance().register_event(fd, excutor::WRITE, [this, h]() mutable {
-        ssize_t n =
-            ::write(fd.handle(), buf.data() + written, buf.size() - written);
-        if(n < 0) {
-            result = std::unexpected(errno);
-            h.resume();
-            return;
-        }
-        written += static_cast<size_t>(n);
-        if(written < buf.size()) {
-            do_write(h);
-        } else {
-            result = written;
-            h.resume();
-        }
-    });
+    excutor::instance().async_send(fd.handle(), buf.data() + written,
+        buf.size() - written, 0, [this, h](int res) mutable {
+            if(res < 0) {
+                result = std::unexpected(-res);
+                h.resume();
+                return;
+            }
+            written += static_cast<size_t>(res);
+            if(written < buf.size()) {
+                do_write(h); // 短写，继续
+            } else {
+                result = written;
+                h.resume();
+            }
+        });
 }
 
 bool connection::write_awaitable::await_ready() const noexcept {
@@ -237,7 +201,6 @@ bool connection::write_awaitable::await_ready() const noexcept {
 }
 
 bool connection::write_awaitable::await_suspend(std::coroutine_handle<> h) {
-    if(try_write() == false) { return false; }
     do_write(h);
     return true;
 }
@@ -246,6 +209,8 @@ std::expected<size_t, int> connection::write_awaitable::await_resume() {
     return result;
 }
 
+// -----------------------------------------------------------------------
+// accept_awaitable: 使用 io_uring accept
 // -----------------------------------------------------------------------
 
 bool acceptor::accept_awaitable::try_accept() {
@@ -267,22 +232,15 @@ bool acceptor::accept_awaitable::await_ready() const noexcept {
 }
 
 bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
-    // 先尝试立即 accept
-    if(try_accept() == false) { return false; }
-
-    auto accept_cb = [this, h]() mutable {
-        int client_fd2 = ::accept4(
-            fd.handle(), nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if(client_fd2 < 0) {
-            log::erro("accept4 failed: {}", std::strerror(errno));
-        } else {
-            result = connection(FileDescriptor(client_fd2));
-        }
-        h.resume();
-    };
-
-    // 无连接可接受，挂起等待
-    excutor::instance().register_event(fd, excutor::READ, accept_cb);
+    excutor::instance().async_accept(fd.handle(), nullptr, nullptr,
+        SOCK_NONBLOCK | SOCK_CLOEXEC, [this, h](int res) mutable {
+            if(res >= 0) {
+                result = connection(FileDescriptor(res));
+            } else {
+                log::erro("io_uring accept failed: {}", std::strerror(-res));
+            }
+            h.resume();
+        });
     return true;
 }
 
@@ -290,7 +248,9 @@ connection acceptor::accept_awaitable::await_resume() {
     return std::move(result);
 }
 
-// ------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// connect_awaitable: 使用 io_uring connect
+// -----------------------------------------------------------------------
 
 bool connect_awaitable::await_ready() const noexcept {
     return false;
@@ -300,49 +260,33 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
     int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if(fd < 0) {
         log::erro("socket failed: {}", std::strerror(errno));
-        // 返回 false: 不挂起，立即 resume（result 为空 connection）
         return false;
     }
 
-    struct sockaddr_in addr{};
+    conn_fd = FileDescriptor(fd);
+
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(static_cast<uint16_t>(port));
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    int ret =
-        ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-    if(ret == 0) {
-        // Connected immediately - 不挂起
-        result = connection(FileDescriptor(fd));
-        return false;
-    }
-
-    if(errno != EINPROGRESS) {
-        log::erro("connect failed: {}", std::strerror(errno));
-        ::close(fd);
-        return false;
-    }
-
-    // Connection in progress, 挂起等待 write-ready
-    auto conn_fd = FileDescriptor(fd);
-    excutor::instance().register_event(
-        conn_fd, excutor::WRITE, [this, h, conn_fd]() mutable {
-            int err       = 0;
-            socklen_t len = sizeof(err);
-            ::getsockopt(conn_fd.handle(), SOL_SOCKET, SO_ERROR, &err, &len);
-            if(err == 0) {
+    excutor::instance().async_connect(fd,
+        reinterpret_cast<const sockaddr*>(&addr), sizeof(addr),
+        [this, h](int res) mutable {
+            if(res == 0) {
                 result = connection(conn_fd);
             } else {
-                log::erro("connect error: {}", std::strerror(err));
+                log::erro("io_uring connect failed: {}", std::strerror(-res));
             }
             h.resume();
         });
-    return true; // 挂起
+    return true;
 }
 
 connection connect_awaitable::await_resume() {
     return std::move(result);
 }
+
+// -----------------------------------------------------------------------
 
 acceptor co_listen(int port) {
     int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);

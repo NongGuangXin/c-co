@@ -15,18 +15,16 @@ class connection {
         return static_cast<bool>(fd_);
     }
 
-    // Awaitable for co_read
+    // Awaitable for co_read: 读取一次可用数据
     struct read_awaitable {
         FileDescriptor fd;
         std::vector<unsigned char>& buf;
         std::expected<size_t, int> result;
 
         static constexpr size_t kChunkSize = 4096;
-        size_t total{0};
 
         // 尝试立即读取，返回 true 表示需要继续挂起等待
         bool try_read();
-        void do_read(std::coroutine_handle<> h);
 
         bool await_ready() const noexcept;
         bool await_suspend(std::coroutine_handle<> h);
@@ -121,6 +119,9 @@ class acceptor {
 struct connect_awaitable {
     int port;
     connection result;
+    // 存储地址，确保 io_uring connect 期间生命周期有效
+    struct sockaddr_in addr{};
+    FileDescriptor conn_fd;
 
     bool await_ready() const noexcept;
     bool await_suspend(std::coroutine_handle<> h);
@@ -128,7 +129,7 @@ struct connect_awaitable {
 };
 
 inline connect_awaitable co_connect(int port) {
-    return connect_awaitable{port, {}};
+    return connect_awaitable{port, {}, {}, {}};
 }
 
 // Free functions for creating connections

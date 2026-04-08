@@ -10,12 +10,12 @@
 #include <thread>
 #include <vector>
 #include <functional>
-#include <unordered_map>
 #include <condition_variable>
 #include <cstddef>
 
-#include <sys/epoll.h>
+#include <liburing.h>
 #include <unistd.h>
+#include <netinet/in.h>
 
 class FileDescriptor {
   public:
@@ -52,12 +52,8 @@ class FileDescriptor {
 
 class excutor {
   public:
-    using task_t = std::function<void()>;
-
-    enum co_event {
-        READ,
-        WRITE,
-    };
+    using task_t        = std::function<void()>;
+    using io_callback_t = std::function<void(int result)>;
 
     static constexpr size_t DEFAULT_WORKER_THREADS = 2;
 
@@ -71,11 +67,17 @@ class excutor {
     // 调度执行任务到线程池
     void execute(task_t task);
 
-    // 注册事件（fd 会被分配到某个 epoll 实例）
-    void register_event(const FileDescriptor& fd, co_event ev, task_t task);
+    // 原生 io_uring 异步 I/O 操作
+    void async_recv(int fd, void* buf, size_t len, int flags, io_callback_t cb);
+    void async_send(
+        int fd, const void* buf, size_t len, int flags, io_callback_t cb);
+    void async_accept(int fd, sockaddr* addr, socklen_t* addrlen, int flags,
+        io_callback_t cb);
+    void async_connect(
+        int fd, const sockaddr* addr, socklen_t addrlen, io_callback_t cb);
 
-    // 注销事件
-    void unregister_event(const FileDescriptor& fd);
+    // 取消 fd 上的所有 pending 操作
+    void async_cancel_fd(int fd);
 
     // 带返回值调度任务
     template <typename F, typename... Args,
@@ -139,25 +141,24 @@ class excutor {
   private:
     excutor();
 
-    // 每个 epoll 实例的数据
-    struct epoll_instance {
-        int epoll_fd{-1};
-        std::mutex mutex;
-        std::unordered_map<int, task_t> callbacks;
+    // 每个 io_uring 实例的数据
+    struct uring_instance {
+        struct io_uring ring{};
+        std::mutex sq_mutex; // 保护 SQ 提交
     };
 
-    void epoll_loop(size_t index);
+    void uring_loop(size_t index);
     void worker_loop();
 
-    // 根据 fd 选择 epoll 实例（一致性分配）
-    size_t fd_to_epoll_index(int fd) const;
+    // 根据 fd 选择 uring 实例（一致性分配）
+    size_t fd_to_uring_index(int fd) const;
 
   private:
     std::atomic<bool> running_{true};
 
-    // 多 epoll 实例
-    std::vector<std::unique_ptr<epoll_instance>> epollers_;
-    std::vector<std::thread> epoll_threads_;
+    // 多 io_uring 实例
+    std::vector<std::unique_ptr<uring_instance>> urings_;
+    std::vector<std::thread> uring_threads_;
 
     // 线程池
     std::vector<std::thread> worker_threads_;

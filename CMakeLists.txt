@@ -19,6 +19,7 @@ endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_library(c++co SHARED src/log.cc src/excutor.cc src/async.cc)
+target_link_libraries(c++co PUBLIC uring)
 
 
 add_executable(task_test test/task_test.cc)

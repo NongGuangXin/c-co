@@ -1,6 +1,7 @@
 build/
 thirdparty/
 Testing/
+.cache/
 
 # Prerequisites
 *.d

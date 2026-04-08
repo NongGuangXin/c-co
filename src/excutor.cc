@@ -5,7 +5,8 @@
 #include <cstddef>
 #include <cstring>
 #include <unistd.h>
-#include <sys/epoll.h>
+
+#include <liburing.h>
 
 // 绑定线程到指定CPU核心
 void bind_thread_to_cpu(std::thread& t, int cpu_id) {
@@ -30,22 +31,27 @@ excutor& excutor::instance() {
 excutor::excutor() {
     static size_t num_cpus = std::thread::hardware_concurrency();
 
-    // 创建多个 epoll 实例
+    // 创建多个 io_uring 实例
     for(size_t i = 0; i < num_cpus; i++) {
-        auto ep      = std::make_unique<epoll_instance>();
-        ep->epoll_fd = ::epoll_create1(EPOLL_CLOEXEC);
-        if(ep->epoll_fd < 0) {
-            log::erro("epoll_create1 failed: {}", std::strerror(errno));
+        auto ui = std::make_unique<uring_instance>();
+
+        struct io_uring_params params{};
+        // 尝试使用 COOP_TASKRUN 减少内核开销（需要 kernel 5.19+）
+        // params.flags = IORING_SETUP_COOP_TASKRUN;
+
+        int ret = io_uring_queue_init_params(1024, &ui->ring, &params);
+        if(ret < 0) {
+            log::erro("io_uring_queue_init failed: {}", std::strerror(-ret));
             return;
         }
-        log::dbug("created epoll instance {}, fd={}", i, ep->epoll_fd);
-        epollers_.push_back(std::move(ep));
+        log::dbug("created io_uring instance {}", i);
+        urings_.push_back(std::move(ui));
     }
 
-    // 启动 epoll 事件线程
+    // 启动 io_uring 事件线程
     for(size_t i = 0; i < num_cpus; i++) {
-        epoll_threads_.emplace_back([this, i]() { epoll_loop(i); });
-        bind_thread_to_cpu(epoll_threads_.back(), i);
+        uring_threads_.emplace_back([this, i]() { uring_loop(i); });
+        bind_thread_to_cpu(uring_threads_.back(), i);
     }
 
     // 启动 worker 线程池
@@ -53,23 +59,21 @@ excutor::excutor() {
         worker_threads_.emplace_back([this]() { worker_loop(); });
     }
 
-    log::dbug("excutor created: {} epoll threads, {} worker threads", num_cpus,
-        DEFAULT_WORKER_THREADS);
+    log::dbug("excutor created: {} io_uring threads, {} worker threads",
+        num_cpus, DEFAULT_WORKER_THREADS);
 }
 
 excutor::~excutor() {
     running_ = false;
     queue_cv_.notify_all();
 
-    for(auto& t: epoll_threads_) {
+    for(auto& t: uring_threads_) {
         if(t.joinable()) t.join();
     }
     for(auto& t: worker_threads_) {
         if(t.joinable()) t.join();
     }
-    for(auto& ep: epollers_) {
-        if(ep->epoll_fd >= 0) ::close(ep->epoll_fd);
-    }
+    for(auto& ui: urings_) { io_uring_queue_exit(&ui->ring); }
 }
 
 void excutor::execute(task_t task) {
@@ -80,109 +84,139 @@ void excutor::execute(task_t task) {
     queue_cv_.notify_one();
 }
 
-size_t excutor::fd_to_epoll_index(int fd) const {
-    return static_cast<size_t>(fd) % epollers_.size();
+size_t excutor::fd_to_uring_index(int fd) const {
+    return static_cast<size_t>(fd) % urings_.size();
 }
 
-void excutor::register_event(
-    const FileDescriptor& fd, co_event ev, task_t task) {
-    int raw_fd = fd.handle();
-    size_t idx = fd_to_epoll_index(raw_fd);
-    auto& ep   = *epollers_[idx];
+// ---- 原生 io_uring 异步操作 ----
 
-    log::dbug("register_event fd={} ev={} epoll[{}]", raw_fd,
-        ev == READ ? "READ" : "WRITE", idx);
+void excutor::async_recv(
+    int fd, void* buf, size_t len, int flags, io_callback_t cb) {
+    size_t idx = fd_to_uring_index(fd);
+    auto& ui   = *urings_[idx];
 
-    struct epoll_event epev{};
-    epev.events = (ev == READ) ? EPOLLIN : EPOLLOUT;
-    epev.events |= EPOLLONESHOT | EPOLLET;
-    epev.data.fd = raw_fd;
+    auto completion = std::make_unique<io_callback_t>(std::move(cb));
 
-    // 先插入 callback 再注册 epoll，确保事件触发时 callback 已就绪
-    {
-        std::lock_guard lock(ep.mutex);
-        ep.callbacks[raw_fd] = std::move(task);
+    std::lock_guard lock(ui.sq_mutex);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
+    if(!sqe) {
+        log::erro("async_recv: io_uring_get_sqe failed fd={}", fd);
+        auto moved = std::make_shared<io_callback_t>(std::move(*completion));
+        execute([moved]() { (*moved)(-ENOMEM); });
+        return;
     }
+    io_uring_prep_recv(sqe, fd, buf, len, flags);
+    io_uring_sqe_set_data(sqe, completion.release());
+    io_uring_submit(&ui.ring);
+}
 
-    // 先 ADD（常规路径：首次注册或 EPOLLONESHOT 消费后重新注册）
-    // EEXIST 时 MOD（短写循环：fd 仍在 epoll 中但 oneshot 已禁用，需重新激活）
-    bool ok = true;
-    if(::epoll_ctl(ep.epoll_fd, EPOLL_CTL_ADD, raw_fd, &epev) < 0) {
-        if(errno == EEXIST) {
-            if(::epoll_ctl(ep.epoll_fd, EPOLL_CTL_MOD, raw_fd, &epev) < 0) {
-                log::erro("epoll_ctl MOD failed fd={}: {}", raw_fd,
-                    std::strerror(errno));
-                ok = false;
-            }
-        } else {
-            log::erro(
-                "epoll_ctl ADD failed fd={}: {}", raw_fd, std::strerror(errno));
-            ok = false;
-        }
+void excutor::async_send(
+    int fd, const void* buf, size_t len, int flags, io_callback_t cb) {
+    size_t idx = fd_to_uring_index(fd);
+    auto& ui   = *urings_[idx];
+
+    auto completion = std::make_unique<io_callback_t>(std::move(cb));
+
+    std::lock_guard lock(ui.sq_mutex);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
+    if(!sqe) {
+        log::erro("async_send: io_uring_get_sqe failed fd={}", fd);
+        auto moved = std::make_shared<io_callback_t>(std::move(*completion));
+        execute([moved]() { (*moved)(-ENOMEM); });
+        return;
     }
+    io_uring_prep_send(sqe, fd, buf, len, flags | MSG_NOSIGNAL);
+    io_uring_sqe_set_data(sqe, completion.release());
+    io_uring_submit(&ui.ring);
+}
 
-    // epoll_ctl 失败时，取回 callback 并在线程池中执行，避免协程永久挂起
-    if(!ok) {
-        task_t cb;
-        {
-            std::lock_guard lock(ep.mutex);
-            auto it = ep.callbacks.find(raw_fd);
-            if(it != ep.callbacks.end()) {
-                cb = std::move(it->second);
-                ep.callbacks.erase(it);
-            }
-        }
-        if(cb) {
-            log::warn("executing callback for failed epoll_ctl fd={}", raw_fd);
-            execute(std::move(cb));
-        }
+void excutor::async_accept(
+    int fd, sockaddr* addr, socklen_t* addrlen, int flags, io_callback_t cb) {
+    size_t idx = fd_to_uring_index(fd);
+    auto& ui   = *urings_[idx];
+
+    auto completion = std::make_unique<io_callback_t>(std::move(cb));
+
+    std::lock_guard lock(ui.sq_mutex);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
+    if(!sqe) {
+        log::erro("async_accept: io_uring_get_sqe failed fd={}", fd);
+        auto moved = std::make_shared<io_callback_t>(std::move(*completion));
+        execute([moved]() { (*moved)(-ENOMEM); });
+        return;
+    }
+    io_uring_prep_accept(sqe, fd, addr, addrlen, flags);
+    io_uring_sqe_set_data(sqe, completion.release());
+    io_uring_submit(&ui.ring);
+}
+
+void excutor::async_connect(
+    int fd, const sockaddr* addr, socklen_t addrlen, io_callback_t cb) {
+    size_t idx = fd_to_uring_index(fd);
+    auto& ui   = *urings_[idx];
+
+    auto completion = std::make_unique<io_callback_t>(std::move(cb));
+
+    std::lock_guard lock(ui.sq_mutex);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
+    if(!sqe) {
+        log::erro("async_connect: io_uring_get_sqe failed fd={}", fd);
+        auto moved = std::make_shared<io_callback_t>(std::move(*completion));
+        execute([moved]() { (*moved)(-ENOMEM); });
+        return;
+    }
+    io_uring_prep_connect(sqe, fd, addr, addrlen);
+    io_uring_sqe_set_data(sqe, completion.release());
+    io_uring_submit(&ui.ring);
+}
+
+void excutor::async_cancel_fd(int fd) {
+    size_t idx = fd_to_uring_index(fd);
+    auto& ui   = *urings_[idx];
+
+    std::lock_guard lock(ui.sq_mutex);
+    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
+    if(sqe) {
+        io_uring_prep_cancel_fd(sqe, fd, 0);
+        io_uring_sqe_set_data(sqe, nullptr);
+        io_uring_submit(&ui.ring);
     }
 }
 
-void excutor::unregister_event(const FileDescriptor& fd) {
-    int raw_fd = fd.handle();
-    size_t idx = fd_to_epoll_index(raw_fd);
-    auto& ep   = *epollers_[idx];
+// ---- 事件循环 ----
 
-    log::dbug("unregister_event fd={} epoll[{}]", raw_fd, idx);
-
-    ::epoll_ctl(ep.epoll_fd, EPOLL_CTL_DEL, raw_fd, nullptr);
-
-    std::lock_guard lock(ep.mutex);
-    ep.callbacks.erase(raw_fd);
-}
-
-void excutor::epoll_loop(size_t index) {
-    constexpr int MAX_EVENTS = 64;
-    struct epoll_event events[MAX_EVENTS];
-    auto& ep = *epollers_[index];
+void excutor::uring_loop(size_t index) {
+    auto& ui = *urings_[index];
 
     while(running_) {
-        int n = ::epoll_wait(ep.epoll_fd, events, MAX_EVENTS, 100);
-        if(n < 0) {
-            if(errno == EINTR) continue;
-            log::erro("epoll_wait error on epoll[{}]: {}", index,
-                std::strerror(errno));
+        struct io_uring_cqe* cqe = nullptr;
+
+        struct __kernel_timespec ts{};
+        ts.tv_sec  = 0;
+        ts.tv_nsec = 100'000'000; // 100ms
+
+        int ret = io_uring_wait_cqe_timeout(&ui.ring, &cqe, &ts);
+
+        if(ret < 0) {
+            if(ret == -ETIME || ret == -EINTR) continue;
+            log::erro("io_uring_wait_cqe_timeout error on uring[{}]: {}", index,
+                std::strerror(-ret));
             break;
         }
 
-        for(int i = 0; i < n; i++) {
-            int fd = events[i].data.fd;
-            task_t cb;
-            {
-                std::lock_guard lock(ep.mutex);
-                auto it = ep.callbacks.find(fd);
-                if(it != ep.callbacks.end()) {
-                    cb = std::move(it->second);
-                    ep.callbacks.erase(it);
-                }
-            }
-            if(cb) {
-                // 将IO回调投递到线程池执行，可以避免阻塞epoll线程,
-                // 但是IO性能会降低 execute(std::move(cb));
-                cb();
+        // 批量处理所有可用的 CQE
+        unsigned head;
+        unsigned count = 0;
+        io_uring_for_each_cqe(&ui.ring, head, cqe) {
+            count++;
+            auto* raw = io_uring_cqe_get_data(cqe);
+            if(raw) {
+                auto cb = std::unique_ptr<io_callback_t>(
+                    static_cast<io_callback_t*>(raw));
+                (*cb)(cqe->res);
             }
         }
+        io_uring_cq_advance(&ui.ring, count);
     }
 }
 
