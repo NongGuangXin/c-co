@@ -12,6 +12,7 @@
 #include <functional>
 #include <condition_variable>
 #include <cstddef>
+#include <set>
 
 #include <liburing.h>
 #include <unistd.h>
@@ -144,7 +145,8 @@ class excutor {
     // 每个 io_uring 实例的数据
     struct uring_instance {
         struct io_uring ring{};
-        std::mutex sq_mutex; // 保护 SQ 提交
+        std::mutex sq_mutex;                   // 保护 SQ 提交
+        std::set<io_callback_t*> inflight_cbs; // track in-flight callbacks
     };
 
     void uring_loop(size_t index);

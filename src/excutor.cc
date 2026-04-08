@@ -68,12 +68,30 @@ excutor::~excutor() {
     queue_cv_.notify_all();
 
     for(auto& t: uring_threads_) {
-        if(t.joinable()) t.join();
+        if(t.joinable()) {
+            if(t.get_id() == std::this_thread::get_id()) {
+                t.detach(); // avoid self-join deadlock (signal on uring thread)
+            } else {
+                t.join();
+            }
+        }
     }
     for(auto& t: worker_threads_) {
-        if(t.joinable()) t.join();
+        if(t.joinable()) {
+            if(t.get_id() == std::this_thread::get_id()) {
+                t.detach();
+            } else {
+                t.join();
+            }
+        }
     }
-    for(auto& ui: urings_) { io_uring_queue_exit(&ui->ring); }
+    for(auto& ui: urings_) {
+        // Free any in-flight callbacks that were never completed
+        for(auto* cb: ui->inflight_cbs) { delete cb; }
+        ui->inflight_cbs.clear();
+
+        io_uring_queue_exit(&ui->ring);
+    }
 }
 
 void excutor::execute(task_t task) {
@@ -106,7 +124,9 @@ void excutor::async_recv(
         return;
     }
     io_uring_prep_recv(sqe, fd, buf, len, flags);
-    io_uring_sqe_set_data(sqe, completion.release());
+    auto* raw = completion.release();
+    ui.inflight_cbs.insert(raw);
+    io_uring_sqe_set_data(sqe, raw);
     io_uring_submit(&ui.ring);
 }
 
@@ -126,7 +146,9 @@ void excutor::async_send(
         return;
     }
     io_uring_prep_send(sqe, fd, buf, len, flags | MSG_NOSIGNAL);
-    io_uring_sqe_set_data(sqe, completion.release());
+    auto* raw = completion.release();
+    ui.inflight_cbs.insert(raw);
+    io_uring_sqe_set_data(sqe, raw);
     io_uring_submit(&ui.ring);
 }
 
@@ -146,7 +168,9 @@ void excutor::async_accept(
         return;
     }
     io_uring_prep_accept(sqe, fd, addr, addrlen, flags);
-    io_uring_sqe_set_data(sqe, completion.release());
+    auto* raw = completion.release();
+    ui.inflight_cbs.insert(raw);
+    io_uring_sqe_set_data(sqe, raw);
     io_uring_submit(&ui.ring);
 }
 
@@ -166,7 +190,9 @@ void excutor::async_connect(
         return;
     }
     io_uring_prep_connect(sqe, fd, addr, addrlen);
-    io_uring_sqe_set_data(sqe, completion.release());
+    auto* raw = completion.release();
+    ui.inflight_cbs.insert(raw);
+    io_uring_sqe_set_data(sqe, raw);
     io_uring_submit(&ui.ring);
 }
 
@@ -211,8 +237,12 @@ void excutor::uring_loop(size_t index) {
             count++;
             auto* raw = io_uring_cqe_get_data(cqe);
             if(raw) {
-                auto cb = std::unique_ptr<io_callback_t>(
-                    static_cast<io_callback_t*>(raw));
+                auto* cb_ptr = static_cast<io_callback_t*>(raw);
+                {
+                    std::lock_guard lock(ui.sq_mutex);
+                    ui.inflight_cbs.erase(cb_ptr);
+                }
+                auto cb = std::unique_ptr<io_callback_t>(cb_ptr);
                 (*cb)(cqe->res);
             }
         }
