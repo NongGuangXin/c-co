@@ -3,7 +3,6 @@
 #include "task.h"
 #include <cstddef>
 #include <cstring>
-#include <string_view>
 
 task<int> echo_client(int port) {
     log::info("Connecting to server on port {}...", port);

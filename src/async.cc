@@ -55,11 +55,30 @@ bool connection::read_awaitable::await_ready() const noexcept {
 }
 
 bool connection::read_awaitable::await_suspend(std::coroutine_handle<> h) {
+    // 确保 buf 至少有 kChunkSize 空间用于首次 io_uring recv
+    if(buf.size() < kChunkSize) { buf.resize(kChunkSize); }
+
     excutor::instance().async_recv(
         fd.handle(), buf.data(), buf.size(), 0, [this, h](int res) mutable {
             if(res > 0) {
-                buf.resize(static_cast<size_t>(res));
-                result = static_cast<size_t>(res);
+                size_t total = static_cast<size_t>(res);
+                if(total == buf.size()) {
+                    // io_uring 唤醒后, 如果buf读满，继续非阻塞 drain 所有可用数据
+                    for(;;) {
+                        if(buf.size() < total + kChunkSize) {
+                            buf.resize(total + kChunkSize);
+                        }
+                        ssize_t n = ::recv(fd.handle(), buf.data() + total,
+                            buf.size() - total, MSG_DONTWAIT);
+                        if(n > 0) {
+                            total += static_cast<size_t>(n);
+                            continue;
+                        }
+                        break; // EAGAIN / EOF / error — 停止 drain
+                    }
+                }
+                buf.resize(total);
+                result = total;
             } else if(res == 0) {
                 buf.resize(0);
                 result = static_cast<size_t>(0);
