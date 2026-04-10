@@ -57,7 +57,9 @@ class log {
         if(__impl().check(Level::ERRO) == false) { return; }
 
         std::string str =
-            std::vformat(fmt.str(), std::make_format_args(args...));
+            std::format("[in {}:{}] ", fmt.file_name(), fmt.line());
+
+        str += std::vformat(fmt.str(), std::make_format_args(args...));
         __impl().write(Level::ERRO, str);
     }
 

@@ -45,7 +45,7 @@ task<int> server(acceptor& ac) {
         connection conn = co_await ac.co_accept();
         if(!conn) {
             log::erro("Accept error");
-            continue;
+            break;
         }
 
         log::info("New connection accepted");
@@ -55,16 +55,7 @@ task<int> server(acceptor& ac) {
     }
 }
 
-void signal_handler(int sig) {
-    log::erro("Received signal: {}", sig);
-    std::exit(EXIT_SUCCESS);
-}
-
 int main() {
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
-    std::signal(SIGHUP, signal_handler);
-
     log::set_level(log::Level::INFO);
     log::info("{} start", __func__);
 

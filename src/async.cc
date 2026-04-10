@@ -66,10 +66,14 @@ void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
             do_read(h);
             return;
         } else if(res == 0) {
-            result = 0;
+            // 对端关闭：result = 0 表示 EOF
+            // partial data 保留在 buf 中，buf.size() == total
+            buf.resize(total);
+            result = static_cast<size_t>(0);
             h.resume();
             return;
         } else { // 错误
+            if(total > 0) { buf.resize(total); }
             result = std::unexpected(-res);
             h.resume();
         }
@@ -151,7 +155,7 @@ bool acceptor::accept_awaitable::await_ready() const noexcept {
 }
 
 bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
-    peer.resize(sizeof(struct sockaddr));
+    peer.resize(sizeof(struct sockaddr_storage));
     co_excutor::instance().async_io(co_excutor::CO_EVENT::ACCEPT, fd.handle(),
         peer, [this, h](int res) mutable {
             if(res >= 0) {
@@ -193,8 +197,8 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
     std::memcpy(peer.data(), &addr, sizeof(addr));
 
     // Initiate non-blocking connect before registering with asio
-    int rc =
-        ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+    int rc = ::connect(conn_fd.handle(),
+        reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
     if(rc == 0) {
         // 连接完成，不挂起
         result = connection(conn_fd);
@@ -206,8 +210,8 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
     }
 
     // Wait for connection completion
-    co_excutor::instance().async_io(
-        co_excutor::CO_EVENT::CONNECT, fd, peer, [this, h](int res) mutable {
+    co_excutor::instance().async_io(co_excutor::CO_EVENT::CONNECT,
+        conn_fd.handle(), peer, [this, h](int res) mutable {
             if(res == 0) {
                 result = connection(conn_fd);
             } else {

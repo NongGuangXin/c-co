@@ -36,7 +36,7 @@ struct epoll_io_context {
 
 class epoll_instance {
   public:
-    epoll_instance() {
+    explicit epoll_instance(std::atomic<bool>& running): running_(running) {
         epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
         if(epoll_fd_ < 0) {
             log::erro("excutor_epoll: epoll_create1 failed: {}",
@@ -64,7 +64,7 @@ class epoll_instance {
     ~epoll_instance() {
         if(event_fd_ >= 0) { ::close(event_fd_); }
         if(epoll_fd_ >= 0) {
-            // 清理残留 pending
+            // 清理残留 pending（不回调，进程正在退出）
             for(auto& [fd, ctx]: pending_) {
                 ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
                 delete ctx;
@@ -81,10 +81,7 @@ class epoll_instance {
     void async_io(co_excutor::CO_EVENT event, int fd,
         std::vector<unsigned char>& buf, co_excutor::io_callback_t cb,
         ssize_t len) {
-        if(!initialized_) {
-            cb(-ENOMEM);
-            return;
-        }
+        if(!initialized_ || !running_) { return; }
 
         auto* ctx = new epoll_io_context{event, fd, buf, std::move(cb), len};
 
@@ -141,11 +138,11 @@ class epoll_instance {
     }
 
     // event_loop 由外部线程调用
-    void event_loop(std::atomic<bool>& running) {
+    void event_loop() {
         static constexpr int MAX_EVENTS = 64;
         struct epoll_event events[MAX_EVENTS];
 
-        while(running) {
+        while(running_) {
             int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 100);
 
             if(nfds < 0) {
@@ -192,9 +189,8 @@ class epoll_instance {
                     break;
                 }
 
-                auto cb = std::move(ctx->cb);
+                ctx->cb(res);
                 delete ctx;
-                cb(res);
             }
         }
     }
@@ -226,8 +222,10 @@ class epoll_instance {
                     break;
                 }
             } else if(n == 0) {
-                res = 0;
-                if(total > 0) { buf.resize(total); }
+                // EOF：如果已有数据则先返回数据，下次 read 再返回 0
+                // 如果无数据则返回 0 表示纯 EOF
+                buf.resize(total);
+                res = (total > 0) ? static_cast<int>(total) : 0;
                 break;
             } else {
                 if(errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -244,6 +242,7 @@ class epoll_instance {
     }
 
     static int do_write(epoll_io_context* ctx) {
+        if(ctx->len < 0) { ctx->len = 0; }
         ssize_t n = ::send(ctx->fd, ctx->buf.data() + ctx->len,
             ctx->buf.size() - ctx->len, MSG_DONTWAIT | MSG_NOSIGNAL);
         return (n >= 0) ? static_cast<int>(n) : -errno;
@@ -271,6 +270,7 @@ class epoll_instance {
     std::mutex mutex_;
     std::unordered_map<int, epoll_io_context*> pending_;
     bool initialized_{false};
+    std::atomic<bool>& running_;
 };
 
 // ---------------------------------------------------------------------------
@@ -283,25 +283,26 @@ class excutor_epoll_impl {
         size_t num_cpus = std::thread::hardware_concurrency();
 
         for(size_t i = 0; i < num_cpus; i++) {
-            auto inst = std::make_unique<epoll_instance>();
+            auto inst = std::make_unique<epoll_instance>(running_);
             if(!inst->initialized()) {
                 log::erro(
                     "excutor_epoll: failed to create epoll instance {}", i);
-                return;
+                throw std::runtime_error(
+                    "excutor_epoll: failed to create epoll instance");
             }
             instances_.push_back(std::move(inst));
         }
 
         for(size_t i = 0; i < num_cpus; i++) {
             loop_threads_.emplace_back(
-                [this, i]() { instances_[i]->event_loop(running_); });
+                [this, i]() { instances_[i]->event_loop(); });
         }
 
         log::dbug("excutor_epoll: {} epoll event loops started", num_cpus);
     }
 
     ~excutor_epoll_impl() {
-        running_ = false;
+        running_.store(false, std::memory_order_release);
         // 唤醒所有 event_loop 以便退出
         for(auto& inst: instances_) { inst->wakeup(); }
         for(auto& t: loop_threads_) {

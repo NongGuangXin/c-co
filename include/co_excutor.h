@@ -104,3 +104,5 @@ class excutor_uring : public co_excutor {
     void async_io(CO_EVENT event, int fd, std::vector<unsigned char>& buf,
         io_callback_t cb, ssize_t len = -1) override;
 };
+
+void bind_thread_to_cpu(std::thread& t, int cpu_id);
