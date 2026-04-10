@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_BUILD_TYPE "Release")
-# set(CMAKE_BUILD_TYPE "Debug")
+# set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_BUILD_TYPE "Debug")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -19,7 +19,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_library(c++co SHARED src/log.cc src/excutor.cc src/async.cc)
+add_library(c++co SHARED src/log.cc src/excutor.cc src/async.cc src/thrdpool.cc src/co_excutor.cc src/excutor_epoll.cc src/excutor_iouring.cc)
 target_link_libraries(c++co PUBLIC uring)
 
 
@@ -40,6 +40,9 @@ target_link_libraries(echo_client_buf PRIVATE c++co)
 
 add_executable(http_server test/http_server.cc)
 target_link_libraries(http_server PRIVATE c++co)
+
+add_executable(thrd_test test/thrd_test.cc)
+target_link_libraries(thrd_test PRIVATE c++co)
 
 add_executable(pingpong_client test/pingpong_client.cc)
 target_link_libraries(pingpong_client PRIVATE pthread)

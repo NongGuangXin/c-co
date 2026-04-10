@@ -4,8 +4,8 @@
 #include <functional>
 #include <queue>
 #include <thread>
-class thrdpool final{
-public:
+class thrdpool final {
+  public:
     explicit thrdpool(size_t num_threads = 2);
     ~thrdpool();
 
@@ -13,7 +13,7 @@ public:
 
     void execute(task_t&& task);
 
-private:
+  private:
     std::vector<std::thread> worker_threads_{};
     std::condition_variable queue_cv_{};
     std::atomic<bool> running_{true};

@@ -54,18 +54,12 @@ excutor::excutor() {
         bind_thread_to_cpu(uring_threads_.back(), i);
     }
 
-    // 启动 worker 线程池
-    for(size_t i = 0; i < DEFAULT_WORKER_THREADS; i++) {
-        worker_threads_.emplace_back([this]() { worker_loop(); });
-    }
-
     log::dbug("excutor created: {} io_uring threads, {} worker threads",
         num_cpus, DEFAULT_WORKER_THREADS);
 }
 
 excutor::~excutor() {
     running_ = false;
-    queue_cv_.notify_all();
 
     for(auto& t: uring_threads_) {
         if(t.joinable()) {
@@ -76,15 +70,7 @@ excutor::~excutor() {
             }
         }
     }
-    for(auto& t: worker_threads_) {
-        if(t.joinable()) {
-            if(t.get_id() == std::this_thread::get_id()) {
-                t.detach();
-            } else {
-                t.join();
-            }
-        }
-    }
+
     for(auto& ui: urings_) {
         // Free any in-flight callbacks that were never completed
         for(auto* cb: ui->inflight_cbs) { delete cb; }
@@ -95,11 +81,7 @@ excutor::~excutor() {
 }
 
 void excutor::execute(task_t task) {
-    {
-        std::lock_guard lock(queue_mutex_);
-        task_queue_.push(std::move(task));
-    }
-    queue_cv_.notify_one();
+    pool.execute(std::move(task));
 }
 
 size_t excutor::fd_to_uring_index(int fd) const {
@@ -196,19 +178,6 @@ void excutor::async_connect(
     io_uring_submit(&ui.ring);
 }
 
-void excutor::async_cancel_fd(int fd) {
-    size_t idx = fd_to_uring_index(fd);
-    auto& ui   = *urings_[idx];
-
-    std::lock_guard lock(ui.sq_mutex);
-    struct io_uring_sqe* sqe = io_uring_get_sqe(&ui.ring);
-    if(sqe) {
-        io_uring_prep_cancel_fd(sqe, fd, 0);
-        io_uring_sqe_set_data(sqe, nullptr);
-        io_uring_submit(&ui.ring);
-    }
-}
-
 // ---- 事件循环 ----
 
 void excutor::uring_loop(size_t index) {
@@ -247,21 +216,5 @@ void excutor::uring_loop(size_t index) {
             }
         }
         io_uring_cq_advance(&ui.ring, count);
-    }
-}
-
-void excutor::worker_loop() {
-    while(true) {
-        task_t task;
-        {
-            std::unique_lock lock(queue_mutex_);
-            queue_cv_.wait(
-                lock, [this]() { return !task_queue_.empty() || !running_; });
-            if(!running_ && task_queue_.empty()) break;
-            if(task_queue_.empty()) continue;
-            task = std::move(task_queue_.front());
-            task_queue_.pop();
-        }
-        if(task) task();
     }
 }

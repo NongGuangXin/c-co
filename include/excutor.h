@@ -1,18 +1,17 @@
 #pragma once
 
 #include "task.h"
+#include "thrdpool.h"
 
+#include <set>
 #include <atomic>
 #include <future>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 #include <functional>
-#include <condition_variable>
 #include <cstddef>
-#include <set>
 
 #include <liburing.h>
 #include <unistd.h>
@@ -76,9 +75,6 @@ class excutor {
         io_callback_t cb);
     void async_connect(
         int fd, const sockaddr* addr, socklen_t addrlen, io_callback_t cb);
-
-    // 取消 fd 上的所有 pending 操作
-    void async_cancel_fd(int fd);
 
     // 带返回值调度任务
     template <typename F, typename... Args,
@@ -150,7 +146,6 @@ class excutor {
     };
 
     void uring_loop(size_t index);
-    void worker_loop();
 
     // 根据 fd 选择 uring 实例（一致性分配）
     size_t fd_to_uring_index(int fd) const;
@@ -163,8 +158,5 @@ class excutor {
     std::vector<std::thread> uring_threads_;
 
     // 线程池
-    std::vector<std::thread> worker_threads_;
-    std::condition_variable queue_cv_;
-    std::queue<task_t> task_queue_;
-    std::mutex queue_mutex_;
+    thrdpool pool;
 };

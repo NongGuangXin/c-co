@@ -11,9 +11,7 @@ thrdpool::~thrdpool() {
     running_.store(false);
     queue_cv_.notify_all();
 
-    for(std::thread& thrd : worker_threads_) {
-        thrd.join();
-    }
+    for(std::thread& thrd: worker_threads_) { thrd.join(); }
 }
 
 void thrdpool::execute(task_t&& task) {
@@ -29,17 +27,16 @@ void thrdpool::worker_loop() {
         task_t task;
         {
             std::unique_lock lock(queue_mutex_);
-            queue_cv_.wait(lock, [this]() { return !task_queue_.empty() || !running_.load(); });
-            if(!running_.load()) {
-                break;
-            }
+            queue_cv_.wait(lock,
+                [this]() { return !task_queue_.empty() || !running_.load(); });
+            if(!running_.load()) { break; }
             task = std::move(task_queue_.front());
             task_queue_.pop();
         }
         if(task) task();
     }
 
-    while (!task_queue_.empty()) {
+    while(!task_queue_.empty()) {
         task_t task = std::move(task_queue_.front());
         task_queue_.pop();
         if(task) task();

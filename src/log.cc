@@ -1,5 +1,6 @@
 #include "log.h"
 #include <atomic>
+#include <mutex>
 #include <string_view>
 
 #ifdef USE_SPDLOG
@@ -71,9 +72,15 @@ const std::string_view level_to_string(Level level) {
     return level_str[static_cast<size_t>(level)];
 }
 
+static std::mutex log_lock{};
+
 void log::impl::write(Level level, std::string_view str) {
-    std::cout << format_timestamp() << "[" << level_to_string(level) << "] "
-              << str << "\n";
+    std::string time = format_timestamp();
+    {
+        std::lock_guard<std::mutex> lock(log_lock);
+        std::cout << format_timestamp() << "[" << level_to_string(level) << "] "
+                  << str << "\n";
+    }
     std::cout.flush();
 }
 #endif

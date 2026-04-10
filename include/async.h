@@ -21,7 +21,7 @@ class connection {
         std::vector<unsigned char>& buf;
         std::expected<size_t, int> result;
 
-        static constexpr size_t kChunkSize = 4096;
+        // static constexpr size_t kChunkSize = 4096;
 
         // 尝试立即读取，返回 true 表示需要继续挂起等待
         bool try_read();
@@ -37,10 +37,9 @@ class connection {
         size_t total;
         FileDescriptor fd;
         std::vector<unsigned char>& buf;
+        std::vector<unsigned char> remain;
         std::expected<size_t, int> result;
 
-        // 尝试立即读取，返回 true 表示需要挂起
-        bool try_read();
         void do_read(std::coroutine_handle<> h);
 
         bool await_ready() const noexcept;
@@ -76,7 +75,7 @@ class connection {
     }
 
     read_until_awaitable co_read_until(std::vector<unsigned char>& buf) {
-        return read_until_awaitable{0, 0, fd_, buf, {}};
+        return read_until_awaitable{0, 0, fd_, buf, {}, {}};
     }
 
     write_awaitable co_write(const std::vector<unsigned char>& buf) {
@@ -99,8 +98,7 @@ class acceptor {
     struct accept_awaitable {
         connection result;
         FileDescriptor fd;
-
-        bool try_accept();
+        std::vector<unsigned char> peer;
 
         bool await_ready() const noexcept;
         bool await_suspend(std::coroutine_handle<> h);
@@ -108,7 +106,7 @@ class acceptor {
     };
 
     accept_awaitable co_accept() {
-        return accept_awaitable{{}, fd_};
+        return accept_awaitable{{}, fd_, {}};
     }
 
   private:
@@ -122,6 +120,7 @@ struct connect_awaitable {
     // 存储地址，确保 io_uring connect 期间生命周期有效
     struct sockaddr_in addr{};
     FileDescriptor conn_fd;
+    std::vector<unsigned char> peer;
 
     bool await_ready() const noexcept;
     bool await_suspend(std::coroutine_handle<> h);
@@ -129,7 +128,7 @@ struct connect_awaitable {
 };
 
 inline connect_awaitable co_connect(int port) {
-    return connect_awaitable{port, {}, {}, {}};
+    return connect_awaitable{port, {}, {}, {}, {}};
 }
 
 // Free functions for creating connections
