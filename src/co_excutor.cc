@@ -22,8 +22,11 @@ co_excutor& co_excutor::instance() {
     static std::once_flag once;
     std::call_once(once, init_signal);
 
-    // static excutor_epoll instance;
+#if defined(USE_URING)
     static excutor_uring instance;
+#else
+    static excutor_epoll instance;
+#endif
     return instance;
 }
 

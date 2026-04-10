@@ -19,30 +19,53 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_library(c++co SHARED src/log.cc src/thrdpool.cc src/async.cc src/co_excutor.cc src/excutor_epoll.cc src/excutor_iouring.cc)
-target_link_libraries(c++co PUBLIC uring)
 
+# Common sources (excluding backend-specific files)
+set(COMMON_SRCS src/log.cc src/thrdpool.cc src/async.cc src/co_excutor.cc)
 
-add_executable(task_test test/task_test.cc)
-target_link_libraries(task_test PRIVATE c++co)
+# Test executables to build for each backend
+set(TEST_TARGETS
+    task_test:test/task_test.cc
+    echo_server:test/echo_server.cc
+    echo_client:test/echo_client.cc
+    echo_client_mt:test/echo_client_mt.cc
+    echo_client_buf:test/echo_client_buf.cc
+    http_server:test/http_server.cc
+    thrd_test:test/thrd_test.cc
+)
 
-add_executable(echo_server test/echo_server.cc)
-target_link_libraries(echo_server PRIVATE c++co)
+# --- epoll backend ---
+add_library(c++co_epoll SHARED ${COMMON_SRCS} src/excutor_epoll.cc)
+# epoll backend does not need liburing
+target_link_libraries(c++co_epoll PUBLIC pthread)
 
-add_executable(echo_client test/echo_client.cc)
-target_link_libraries(echo_client PRIVATE c++co)
+foreach(entry ${TEST_TARGETS})
+    string(REPLACE ":" ";" parts ${entry})
+    list(GET parts 0 name)
+    list(GET parts 1 src)
+    set(target_name "${name}_epoll")
+    add_executable(${target_name} ${src})
+    target_link_libraries(${target_name} PRIVATE c++co_epoll)
+    set_target_properties(${target_name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/epoll)
+endforeach()
 
-add_executable(echo_client_mt test/echo_client_mt.cc)
-target_link_libraries(echo_client_mt PRIVATE c++co)
+# --- uring backend ---
+add_library(c++co_uring SHARED ${COMMON_SRCS} src/excutor_iouring.cc)
+target_compile_definitions(c++co_uring PUBLIC USE_URING)
+target_link_libraries(c++co_uring PUBLIC uring)
 
-add_executable(echo_client_buf test/echo_client_buf.cc)
-target_link_libraries(echo_client_buf PRIVATE c++co)
+foreach(entry ${TEST_TARGETS})
+    string(REPLACE ":" ";" parts ${entry})
+    list(GET parts 0 name)
+    list(GET parts 1 src)
+    set(target_name "${name}_uring")
+    add_executable(${target_name} ${src})
+    target_link_libraries(${target_name} PRIVATE c++co_uring)
+    set_target_properties(${target_name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/uring)
+endforeach()
 
-add_executable(http_server test/http_server.cc)
-target_link_libraries(http_server PRIVATE c++co)
-
-add_executable(thrd_test test/thrd_test.cc)
-target_link_libraries(thrd_test PRIVATE c++co)
-
+# pingpong_client has no backend dependency
 add_executable(pingpong_client test/pingpong_client.cc)
 target_link_libraries(pingpong_client PRIVATE pthread)
