@@ -3,7 +3,6 @@
 #include "task.h"
 #include "thrdpool.h"
 
-#include <cstddef>
 #include <future>
 #include <vector>
 #include <functional>
@@ -16,8 +15,6 @@ class co_excutor {
         ACCEPT  = 0x4,
         CONNECT = 0x8
     };
-
-    static constexpr size_t kChunkSize = 4096;
 
     using task_t        = std::function<void()>;
     using io_callback_t = std::function<void(int)>;

@@ -1,8 +1,9 @@
 #pragma once
 
-#include "excutor.h"
+#include "file_descriptor.h"
 
 #include <coroutine>
+#include <netinet/in.h>
 #include <expected>
 #include <vector>
 
@@ -20,11 +21,6 @@ class connection {
         FileDescriptor fd;
         std::vector<unsigned char>& buf;
         std::expected<size_t, int> result;
-
-        // static constexpr size_t kChunkSize = 4096;
-
-        // 尝试立即读取，返回 true 表示需要继续挂起等待
-        bool try_read();
 
         bool await_ready() const noexcept;
         bool await_suspend(std::coroutine_handle<> h);
@@ -54,8 +50,6 @@ class connection {
         size_t written;
         std::expected<size_t, int> result;
 
-        // 尝试立即写入，返回 true 表示需要挂起
-        bool try_write();
         void do_write(std::coroutine_handle<> h);
 
         bool await_ready() const noexcept;
@@ -131,5 +125,4 @@ inline connect_awaitable co_connect(int port) {
     return connect_awaitable{port, {}, {}, {}, {}};
 }
 
-// Free functions for creating connections
 acceptor co_listen(int port);

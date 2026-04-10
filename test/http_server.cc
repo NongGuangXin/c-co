@@ -1,4 +1,5 @@
 #include "async.h"
+#include "co_excutor.h"
 #include "log.h"
 #include "task.h"
 
@@ -46,7 +47,7 @@ task<int> server(acceptor& ac) {
         log::info("New connection accepted");
 
         // 分离协程，不阻塞调用者
-        excutor::detach(handle_client(conn));
+        co_excutor::detach(handle_client(conn));
     }
 }
 
@@ -69,7 +70,7 @@ int main() {
         return -1;
     }
 
-    excutor::sync_wait(server(ac)); // 这里等待协程完成
+    co_excutor::sync_wait(server(ac)); // 这里等待协程完成
 
     log::info("{} exsit", __func__);
     return 0;

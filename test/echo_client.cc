@@ -1,4 +1,5 @@
 #include "async.h"
+#include "co_excutor.h"
 #include "log.h"
 #include "task.h"
 #include <cstring>
@@ -81,7 +82,7 @@ int main() {
     log::set_level(log::Level::INFO);
     log::info("Echo client starting...");
 
-    excutor::sync_wait(echo_client(9999));
+    co_excutor::sync_wait(echo_client(9999));
 
     log::info("Echo client exited");
     return 0;

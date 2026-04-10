@@ -15,12 +15,12 @@
 .
 ├── include/          # 头文件目录
 │   ├── async.h       # 异步网络操作（connection、acceptor）
-│   ├── excutor.h     # 任务执行器和事件循环
+│   ├── co_excutor.h     # 任务执行器和事件循环
 │   ├── log.h         # 日志系统
 │   └── task.h        # 协程任务类型
 ├── src/              # 源文件目录
 │   ├── async.cc      # 异步网络实现
-│   ├── excutor.cc    # 执行器实现
+│   ├── co_excutor.cc    # 执行器实现
 │   └── log.cc        # 日志实现
 ├── test/             # 测试程序
 │   ├── echo_server.cc  # 回显服务器示例
@@ -142,16 +142,16 @@ class acceptor {
 acceptor ac = co_listen(9999);   // 在端口9999监听
 ```
 
-### 4. excutor - 执行器
+### 4. co_excutor - 执行器
 
-[`excutor`](include/excutor.h) 是单例模式的事件循环和任务调度器：
+[`co_excutor`](include/co_excutor.h) 是单例模式的事件循环和任务调度器：
 
 - 管理 epoll 事件循环
 - 调度协程任务的执行
 - 处理I/O事件的挂起和恢复
 
 ```cpp
-class excutor {
+class co_excutor {
   public:
     using task_t = std::function<void()>;
 
@@ -160,7 +160,7 @@ class excutor {
         WRITE,
     };
 
-    static excutor& instance();
+    static co_excutor& instance();
 
     void execute(task_t task);
     void register_event(const FileDescriptor& fd, co_event ev, task_t task);
@@ -197,7 +197,7 @@ class log {
 
 1. **创建协程**：调用协程函数创建 `task<T>` 对象
 2. **初始挂起**：协程在开始时自动挂起（`initial_suspend` 返回 `suspend_always`）
-3. **调度执行**：通过 `excutor` 将协程加入执行队列
+3. **调度执行**：通过 `co_excutor` 将协程加入执行队列
 4. **I/O 挂起**：当遇到I/O操作时，协程挂起并注册到epoll
 5. **事件唤醒**：当I/O就绪时，epoll触发回调通知执行器恢复协程
 6. **完成通知**：协程完成后通过 `final_awaiter` 通知等待者
@@ -239,7 +239,7 @@ class log {
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                        excutor                          │
+│                        co_excutor                       │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
 │  │  thrdLoop   │  │   epoller   │  │  task queue     │  │
 │  │ (线程池)     │ │ (epoll封装)  │  │ (任务队列)       │  │

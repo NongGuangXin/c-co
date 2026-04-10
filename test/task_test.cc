@@ -1,6 +1,6 @@
 #include "log.h"
 #include "task.h"
-#include "excutor.h"
+#include "co_excutor.h"
 
 task<int> add(int a, int b) {
     co_return a + b;
@@ -23,15 +23,15 @@ int main() {
     log::info("=== task test ===");
 
     // Test simple task
-    int result = excutor::sync_wait(add(10, 20));
+    int result = co_excutor::sync_wait(add(10, 20));
     log::info("add(10, 20) = {}", result);
 
     // Test nested task
-    int nested_result = excutor::sync_wait(nested());
+    int nested_result = co_excutor::sync_wait(nested());
     log::info("nested() = {}", nested_result);
 
     // Test void task
-    excutor::sync_wait(void_task());
+    co_excutor::sync_wait(void_task());
     log::info("void_task completed");
 
     log::info("=== all tests passed ===");

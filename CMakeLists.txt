@@ -19,7 +19,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_library(c++co SHARED src/log.cc src/excutor.cc src/async.cc src/thrdpool.cc src/co_excutor.cc src/excutor_epoll.cc src/excutor_iouring.cc)
+add_library(c++co SHARED src/log.cc src/thrdpool.cc src/async.cc src/co_excutor.cc src/excutor_epoll.cc src/excutor_iouring.cc)
 target_link_libraries(c++co PUBLIC uring)
 
 

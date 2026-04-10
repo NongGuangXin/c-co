@@ -42,7 +42,7 @@ std::expected<size_t, int> connection::read_awaitable::await_resume() {
 }
 
 // -----------------------------------------------------------------------
-// read_until_awaitable: 持续读取直到填满 target 字节
+// read_until_awaitable: 持续读取直到填满buf
 // -----------------------------------------------------------------------
 
 void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
@@ -189,23 +189,23 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
     addr.sin_port        = htons(static_cast<uint16_t>(port));
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    // Initiate non-blocking connect before registering with epoll
+    peer.resize(sizeof(addr));
+    std::memcpy(peer.data(), &addr, sizeof(addr));
+
+    // Initiate non-blocking connect before registering with asio
     int rc =
         ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
     if(rc == 0) {
-        // Connected immediately
+        // 连接完成，不挂起
         result = connection(conn_fd);
-        return false; // don't suspend
+        return false;
     }
     if(errno != EINPROGRESS) {
         log::erro("connect failed: {}", std::strerror(errno));
         return false;
     }
 
-    peer.resize(sizeof(addr));
-    std::memcpy(peer.data(), &addr, sizeof(addr));
-
-    // Wait for EPOLLOUT to signal connection completion
+    // Wait for connection completion
     co_excutor::instance().async_io(
         co_excutor::CO_EVENT::CONNECT, fd, peer, [this, h](int res) mutable {
             if(res == 0) {
