@@ -143,7 +143,7 @@ bool connection::write_awaitable::await_suspend(std::coroutine_handle<> h) {
 }
 
 std::expected<size_t, int> connection::write_awaitable::await_resume() {
-    return std::move(result);
+    return result;
 }
 
 // -----------------------------------------------------------------------
@@ -169,7 +169,7 @@ bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
 }
 
 connection acceptor::accept_awaitable::await_resume() {
-    return std::move(result);
+    return result;
 }
 
 // -----------------------------------------------------------------------
@@ -223,7 +223,7 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
 }
 
 connection connect_awaitable::await_resume() {
-    return std::move(result);
+    return result;
 }
 
 // -----------------------------------------------------------------------
