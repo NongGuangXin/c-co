@@ -39,7 +39,7 @@ print_header() {
 
 echo "Building project..."
 echo ""
-cmake --build build/ > /dev/null 2>&1
+cmake -S . -B build -G "Ninja" && cmake --build build/ > /dev/null 2>&1
 
 echo "====================================="
 echo "  EPOLL Backend Tests"

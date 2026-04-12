@@ -39,7 +39,7 @@ struct epoll_io_context {
 class epoll_ctx_pool {
   public:
     ~epoll_ctx_pool() {
-        for(auto* p: freelist_) delete p;
+        for(auto* p: all_allocated_) delete p;
     }
 
     epoll_io_context* acquire(co_excutor::CO_EVENT event, int fd, void* buf,
@@ -52,7 +52,11 @@ class epoll_ctx_pool {
                 freelist_.pop_back();
             }
         }
-        if(!ctx) ctx = new epoll_io_context();
+        if(!ctx) {
+            ctx = new epoll_io_context();
+            std::lock_guard lock(mutex_);
+            all_allocated_.push_back(ctx);
+        }
         ctx->event = event;
         ctx->fd    = fd;
         ctx->buf   = buf;
@@ -70,6 +74,7 @@ class epoll_ctx_pool {
 
   private:
     std::vector<epoll_io_context*> freelist_;
+    std::vector<epoll_io_context*> all_allocated_;
     std::mutex mutex_;
 };
 
@@ -193,6 +198,12 @@ class epoll_instance {
                 }
 
                 if(!ctx) continue;
+
+                // If shutting down, don't invoke callbacks - just free context
+                if(!running_.load(std::memory_order_relaxed)) {
+                    pool_.release(ctx);
+                    continue;
+                }
 
                 int res = 0;
                 switch(ctx->event) {

@@ -205,9 +205,9 @@ bool acceptor::accept_awaitable::await_ready() const noexcept {
     // Try non-blocking accept first to avoid suspending if connection is ready
     socklen_t addrlen = sizeof(addr);
     int client_fd     = ::accept4(fd,
-        const_cast<struct sockaddr*>(
+            const_cast<struct sockaddr*>(
             reinterpret_cast<const struct sockaddr*>(&addr)),
-        &addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            &addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if(client_fd >= 0) {
         const_cast<accept_awaitable*>(this)->result =
             connection(FileDescriptor(client_fd));

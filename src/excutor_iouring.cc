@@ -48,7 +48,8 @@ class uring_instance {
 
     ~uring_instance() {
         io_uring_queue_exit(&ring_);
-        for(auto* p: freelist_) delete p;
+        // all_allocated_ is the superset of freelist_; delete once
+        for(auto* p: all_allocated_) delete p;
     }
 
     void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
@@ -103,6 +104,12 @@ class uring_instance {
                 auto* ctx =
                     static_cast<uring_io_context*>(io_uring_cqe_get_data(cqe));
                 if(!ctx) continue;
+
+                // If shutting down, don't invoke callbacks - just free context
+                if(!running_.load(std::memory_order_relaxed)) {
+                    release_ctx(ctx);
+                    continue;
+                }
 
                 if(ctx->event == co_excutor::CO_EVENT::ACCEPT &&
                     cqe->res >= 0) {
@@ -162,7 +169,11 @@ class uring_instance {
                 freelist_.pop_back();
             }
         }
-        if(!ctx) ctx = new uring_io_context();
+        if(!ctx) {
+            ctx = new uring_io_context();
+            std::lock_guard lock(ctx_mutex_);
+            all_allocated_.push_back(ctx);
+        }
         return ctx;
     }
 
@@ -180,6 +191,7 @@ class uring_instance {
 
     std::mutex ctx_mutex_;
     std::vector<uring_io_context*> freelist_;
+    std::vector<uring_io_context*> all_allocated_;
 };
 
 // ---------------------------------------------------------------------------

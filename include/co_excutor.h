@@ -13,6 +13,7 @@ using task_t = std::function<void()>;
 // Lightweight type-erased callback for IO completions.
 // Uses inline buffer (48 bytes) to avoid heap allocation for typical lambda
 // captures. Falls back to std::function for larger captures.
+// 觉得太复杂可以直接：using io_callback_t = std::function<void(int)>;
 class io_callback_t {
     static constexpr size_t BUF_SIZE = 48;
 
