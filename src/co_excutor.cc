@@ -5,7 +5,15 @@
 
 static void signal_handler(int sig) {
     log::erro("Received signal: {}", sig);
+    co_excutor::shutdown();
     std::exit(EXIT_SUCCESS);
+}
+
+void co_excutor::shutdown() {
+    // 1. Stop event loop threads first (no more callbacks will fire)
+    instance().stop();
+    // 2. Now safe to destroy all suspended detached coroutine frames
+    detached_registry::instance().destroy_all();
 }
 
 static void init_signal() {

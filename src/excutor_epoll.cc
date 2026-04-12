@@ -307,8 +307,12 @@ class excutor_epoll_impl {
     }
 
     ~excutor_epoll_impl() {
-        running_.store(false, std::memory_order_release);
-        // 唤醒所有 event_loop 以便退出
+        stop();
+    }
+
+    void stop() {
+        bool expected = true;
+        if(!running_.compare_exchange_strong(expected, false)) return;
         for(auto& inst: instances_) { inst->wakeup(); }
         for(auto& t: loop_threads_) {
             if(t.joinable()) {
@@ -342,4 +346,8 @@ static excutor_epoll_impl& epoll_impl() {
 void excutor_epoll::async_io(
     CO_EVENT event, int fd, void* buf, size_t len, io_callback_t&& cb) {
     epoll_impl().async_io(event, fd, buf, len, std::forward<io_callback_t>(cb));
+}
+
+void excutor_epoll::stop() {
+    epoll_impl().stop();
 }

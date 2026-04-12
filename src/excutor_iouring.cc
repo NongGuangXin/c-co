@@ -218,7 +218,12 @@ class excutor_uring_impl {
     }
 
     ~excutor_uring_impl() {
-        running_ = false;
+        stop();
+    }
+
+    void stop() {
+        bool expected = true;
+        if(!running_.compare_exchange_strong(expected, false)) return;
         for(auto& t: loop_threads_) {
             if(t.joinable()) {
                 if(t.get_id() == std::this_thread::get_id()) {
@@ -251,4 +256,8 @@ static excutor_uring_impl& uring_impl() {
 void excutor_uring::async_io(
     CO_EVENT event, int fd, void* buf, size_t len, io_callback_t&& cb) {
     uring_impl().async_io(event, fd, buf, len, std::forward<io_callback_t>(cb));
+}
+
+void excutor_uring::stop() {
+    uring_impl().stop();
 }

@@ -46,10 +46,10 @@ echo "  EPOLL Backend Tests"
 echo "====================================="
 
 print_header "Test 1: echo_client.cc (epoll)"
-$EPOLL_DIR/echo_server_epoll > "$LOG_FILE" 2>&1 &
+$EPOLL_DIR/echo_server_epoll >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
-if $EPOLL_DIR/echo_client_epoll > "$LOG_FILE" 2>&1; then
+if $EPOLL_DIR/echo_client_epoll >> "$LOG_FILE" 2>&1; then
     echo "[PASS] echo_client_epoll"
 else
     echo "[FAIL] echo_client_epoll"
@@ -58,10 +58,10 @@ fi
 kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 2: echo_client_buf.cc (epoll)"
-$EPOLL_DIR/echo_server_epoll > "$LOG_FILE" 2>&1 &
+$EPOLL_DIR/echo_server_epoll >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
-if $EPOLL_DIR/echo_client_buf_epoll > "$LOG_FILE" 2>&1; then
+if $EPOLL_DIR/echo_client_buf_epoll >> "$LOG_FILE" 2>&1; then
     echo "[PASS] echo_client_buf_epoll"
 else
     echo "[FAIL] echo_client_buf_epoll"
@@ -71,7 +71,7 @@ kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 3: pingpong_client (epoll)"
 echo "Running: 1000 conn, 4 thr, 3s, 4096B"
-$EPOLL_DIR/echo_server_epoll > "$LOG_FILE" 2>&1 &
+$EPOLL_DIR/echo_server_epoll >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
 EPOLL_PINGPONG=$($PINGPONG -c 1000 -t 4 -d 3 -s 4096 2>&1 | grep -oP 'throughput = \K[0-9.]+')
@@ -80,7 +80,7 @@ echo "Result: $EPOLL_PINGPONG MB/s"
 kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 4: ab HTTP (epoll)"
-$EPOLL_DIR/http_server_epoll > "$LOG_FILE" 2>&1 &
+$EPOLL_DIR/http_server_epoll >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
 
@@ -100,10 +100,10 @@ echo "  IO_URING Backend Tests"
 echo "====================================="
 
 print_header "Test 1: echo_client.cc (iouring)"
-$URING_DIR/echo_server_uring > "$LOG_FILE" 2>&1 &
+$URING_DIR/echo_server_uring >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
-if $URING_DIR/echo_client_uring > "$LOG_FILE" 2>&1; then
+if $URING_DIR/echo_client_uring >> "$LOG_FILE" 2>&1; then
     echo "[PASS] echo_client_uring"
 else
     echo "[FAIL] echo_client_uring"
@@ -112,10 +112,10 @@ fi
 kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 2: echo_client_buf.cc (iouring)"
-$URING_DIR/echo_server_uring > "$LOG_FILE" 2>&1 &
+$URING_DIR/echo_server_uring >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
-if $URING_DIR/echo_client_buf_uring > "$LOG_FILE" 2>&1; then
+if $URING_DIR/echo_client_buf_uring >> "$LOG_FILE" 2>&1; then
     echo "[PASS] echo_client_buf_uring"
 else
     echo "[FAIL] echo_client_buf_uring"
@@ -125,7 +125,7 @@ kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 3: pingpong_client (iouring)"
 echo "Running: 1000 conn, 4 thr, 3s, 4096B"
-$URING_DIR/echo_server_uring > "$LOG_FILE" 2>&1 &
+$URING_DIR/echo_server_uring >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
 URING_PINGPONG=$($PINGPONG -c 1000 -t 4 -d 3 -s 4096 2>&1 | grep -oP 'throughput = \K[0-9.]+')
@@ -134,7 +134,7 @@ echo "Result: $URING_PINGPONG MB/s"
 kill $SERVER_PID 2>/dev/null; wait; sleep 0.5
 
 print_header "Test 4: ab HTTP (iouring)"
-$URING_DIR/http_server_uring > "$LOG_FILE" 2>&1 &
+$URING_DIR/http_server_uring >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 wait_for_server $PORT
 

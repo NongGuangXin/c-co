@@ -14,6 +14,9 @@ struct task_promise_base {
     std::coroutine_handle<> continuation_{nullptr};
     std::exception_ptr exception_{nullptr};
     bool self_destroy_{false};
+    // Optional cleanup callback invoked before self-destroy (e.g. unregister
+    // from detached registry). Set by detach()/sync_wait().
+    void (*on_destroy_)(std::coroutine_handle<>){nullptr};
 
     auto initial_suspend() noexcept {
         return std::suspend_always{};
@@ -31,8 +34,8 @@ struct task_promise_base {
             auto cont     = promise.continuation_;
 
             if(promise.self_destroy_) {
-                // Coroutine owns itself - destroy frame here
-                // Must capture continuation before destroy
+                // Unregister before destroying frame
+                if(promise.on_destroy_) { promise.on_destroy_(h); }
                 h.destroy();
             }
 
