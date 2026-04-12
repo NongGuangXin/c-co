@@ -22,7 +22,7 @@ class connection {
         std::vector<unsigned char>& buf;
         std::expected<size_t, int> result;
 
-        bool await_ready() const noexcept;
+        bool await_ready() noexcept;
         bool await_suspend(std::coroutine_handle<> h);
         std::expected<size_t, int> await_resume();
     };
@@ -52,7 +52,7 @@ class connection {
 
         void do_write(std::coroutine_handle<> h);
 
-        bool await_ready() const noexcept;
+        bool await_ready() noexcept;
         bool await_suspend(std::coroutine_handle<> h);
         std::expected<size_t, int> await_resume();
     };
