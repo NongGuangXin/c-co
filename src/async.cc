@@ -137,26 +137,26 @@ void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
 }
 
 bool connection::write_awaitable::await_ready() noexcept {
-    ssize_t total = static_cast<ssize_t>(buf.size());
     ssize_t nsend = 0;
-    while(total > 0) {
+    while(written < buf.size()) {
         nsend = ::send(fd.handle(), buf.data() + written, buf.size() - written,
             MSG_DONTWAIT | MSG_NOSIGNAL);
         if(nsend > 0) {
-            total -= nsend;
             written += static_cast<size_t>(nsend);
             continue;
         }
         break;
     }
 
-    if(nsend >= 0) {
+    // 写完
+    if(written >= buf.size()) {
         result = written;
         return true;
     }
 
-    // nread < 0
-    if(errno == EAGAIN || errno == EWOULDBLOCK) { return false; }
+    if(nsend >= 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
+        return false;
+    }
 
     result = std::unexpected(errno);
     return true;
