@@ -9,8 +9,6 @@
 #include <atomic>
 #include <utility>
 #include <vector>
-#include <functional>
-#include <unordered_map>
 
 #include <sys/types.h>
 #include <sys/epoll.h>
@@ -23,6 +21,7 @@
 
 // ---------------------------------------------------------------------------
 // excutor_epoll 实现：多 epoll 实例，按 fd 分片，并行处理就绪事件
+// 优化：使用 epoll_event.data.ptr 直接携带上下文指针，消除 unordered_map
 // ---------------------------------------------------------------------------
 
 struct epoll_io_context {
@@ -34,8 +33,52 @@ struct epoll_io_context {
 };
 
 // ---------------------------------------------------------------------------
-// 单个 epoll 实例，拥有独立的 epoll fd、eventfd、event_loop 线程和 pending map
+// Per-instance lock-free object pool for epoll_io_context
 // ---------------------------------------------------------------------------
+
+class epoll_ctx_pool {
+  public:
+    ~epoll_ctx_pool() {
+        for(auto* p: freelist_) delete p;
+    }
+
+    epoll_io_context* acquire(co_excutor::CO_EVENT event, int fd, void* buf,
+        size_t len, io_callback_t&& cb) {
+        epoll_io_context* ctx = nullptr;
+        {
+            std::lock_guard lock(mutex_);
+            if(!freelist_.empty()) {
+                ctx = freelist_.back();
+                freelist_.pop_back();
+            }
+        }
+        if(!ctx) ctx = new epoll_io_context();
+        ctx->event = event;
+        ctx->fd    = fd;
+        ctx->buf   = buf;
+        ctx->len   = len;
+        ctx->cb    = std::move(cb);
+        return ctx;
+    }
+
+    void release(epoll_io_context* ctx) {
+        ctx->cb  = nullptr;
+        ctx->buf = nullptr;
+        std::lock_guard lock(mutex_);
+        freelist_.push_back(ctx);
+    }
+
+  private:
+    std::vector<epoll_io_context*> freelist_;
+    std::mutex mutex_;
+};
+
+// ---------------------------------------------------------------------------
+// 单个 epoll 实例，使用 data.ptr 直接传递上下文，无需 pending map
+// ---------------------------------------------------------------------------
+
+// Sentinel pointer to identify eventfd wakeup events
+static epoll_io_context g_eventfd_sentinel;
 
 class epoll_instance {
   public:
@@ -57,8 +100,8 @@ class epoll_instance {
         }
 
         struct epoll_event ev{};
-        ev.events  = EPOLLIN;
-        ev.data.fd = event_fd_;
+        ev.events   = EPOLLIN;
+        ev.data.ptr = &g_eventfd_sentinel;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev);
 
         initialized_ = true;
@@ -66,15 +109,7 @@ class epoll_instance {
 
     ~epoll_instance() {
         if(event_fd_ >= 0) { ::close(event_fd_); }
-        if(epoll_fd_ >= 0) {
-            // 清理残留 pending（不回调，进程正在退出）
-            for(auto& [fd, ctx]: pending_) {
-                ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-                delete ctx;
-            }
-            pending_.clear();
-            ::close(epoll_fd_);
-        }
+        if(epoll_fd_ >= 0) { ::close(epoll_fd_); }
     }
 
     bool initialized() const {
@@ -83,9 +118,11 @@ class epoll_instance {
 
     void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
         io_callback_t&& cb) {
-        if(!initialized_ || !running_) { return; }
+        if(!initialized_ || !running_.load(std::memory_order_relaxed)) {
+            return;
+        }
 
-        auto* ctx = new epoll_io_context{event, fd, buf, len, std::move(cb)};
+        auto* ctx = pool_.acquire(event, fd, buf, len, std::move(cb));
 
         uint32_t epoll_events = EPOLLONESHOT | EPOLLET;
         switch(event) {
@@ -99,34 +136,26 @@ class epoll_instance {
             break;
         }
 
-        {
-            std::lock_guard lock(mutex_);
+        struct epoll_event ev{};
+        ev.events   = epoll_events;
+        ev.data.ptr = ctx;
 
-            struct epoll_event ev{};
-            ev.events  = epoll_events;
-            ev.data.fd = fd;
-
-            if(::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
-                if(errno == ENOENT) {
-                    if(::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
-                        log::erro(
-                            "excutor_epoll: epoll_ctl ADD failed fd={}: {}", fd,
-                            std::strerror(errno));
-                        ctx->cb(-errno);
-                        delete ctx;
-                        return;
-                    }
-                } else {
-                    log::erro("excutor_epoll: epoll_ctl MOD failed fd={}: {}",
+        if(::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) < 0) {
+            if(errno == ENOENT) {
+                if(::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
+                    log::erro("excutor_epoll: epoll_ctl ADD failed fd={}: {}",
                         fd, std::strerror(errno));
-
                     ctx->cb(-errno);
-                    delete ctx;
+                    pool_.release(ctx);
                     return;
                 }
+            } else {
+                log::erro("excutor_epoll: epoll_ctl MOD failed fd={}: {}", fd,
+                    std::strerror(errno));
+                ctx->cb(-errno);
+                pool_.release(ctx);
+                return;
             }
-
-            pending_[fd] = ctx;
         }
     }
 
@@ -143,7 +172,7 @@ class epoll_instance {
         static constexpr int MAX_EVENTS = 1024;
         struct epoll_event events[MAX_EVENTS];
 
-        while(running_) {
+        while(running_.load(std::memory_order_relaxed)) {
             int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 5);
 
             if(nfds < 0) {
@@ -154,22 +183,13 @@ class epoll_instance {
             }
 
             for(int i = 0; i < nfds; i++) {
-                int fd = events[i].data.fd;
+                auto* ctx = static_cast<epoll_io_context*>(events[i].data.ptr);
 
-                if(fd == event_fd_) {
+                if(ctx == &g_eventfd_sentinel) {
                     uint64_t val;
                     ssize_t n = ::read(event_fd_, &val, sizeof(val));
                     (void)n;
                     continue;
-                }
-
-                epoll_io_context* ctx = nullptr;
-                {
-                    std::lock_guard lock(mutex_);
-                    auto it = pending_.find(fd);
-                    if(it == pending_.end()) continue;
-                    ctx = it->second;
-                    pending_.erase(it);
                 }
 
                 if(!ctx) continue;
@@ -191,7 +211,7 @@ class epoll_instance {
                 }
 
                 ctx->cb(res);
-                delete ctx;
+                pool_.release(ctx);
             }
         }
     }
@@ -214,7 +234,7 @@ class epoll_instance {
 
     static void optimize_socket(int fd) {
         int yes     = 1;
-        int bufsize = 262142;
+        int bufsize = 1048576; // 1MB socket buffers for better throughput
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
         ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
@@ -226,7 +246,6 @@ class epoll_instance {
             ::accept4(ctx->fd, static_cast<struct sockaddr*>(ctx->buf),
                 reinterpret_cast<socklen_t*>(&ctx->len),
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
-        // 【可选】优化选项，性能改进有限
         if(client_fd >= 0) { optimize_socket(client_fd); }
         return (client_fd >= 0) ? client_fd : -errno;
     }
@@ -242,8 +261,7 @@ class epoll_instance {
 
     int epoll_fd_{-1};
     int event_fd_{-1};
-    std::mutex mutex_;
-    std::unordered_map<int, epoll_io_context*> pending_;
+    epoll_ctx_pool pool_;
     bool initialized_{false};
     std::atomic<bool>& running_;
 };
@@ -271,6 +289,7 @@ class excutor_epoll_impl {
         for(size_t i = 0; i < num_cpus; i++) {
             loop_threads_.emplace_back(
                 [this, i]() { instances_[i]->event_loop(); });
+            bind_thread_to_cpu(loop_threads_.back(), static_cast<int>(i));
         }
 
         log::dbug("excutor_epoll: {} epoll event loops started", num_cpus);

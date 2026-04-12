@@ -5,9 +5,104 @@
 
 #include <future>
 #include <functional>
+#include <cstring>
+#include <type_traits>
 
-using task_t        = std::function<void()>;
-using io_callback_t = std::function<void(int)>;
+using task_t = std::function<void()>;
+
+// Lightweight type-erased callback for IO completions.
+// Uses inline buffer (48 bytes) to avoid heap allocation for typical lambda
+// captures. Falls back to std::function for larger captures.
+class io_callback_t {
+    static constexpr size_t BUF_SIZE = 48;
+
+    using invoke_fn  = void (*)(void*, int);
+    using destroy_fn = void (*)(void*);
+    using move_fn    = void (*)(void* src, void* dst);
+
+    alignas(std::max_align_t) unsigned char buf_[BUF_SIZE]{};
+    invoke_fn invoke_{nullptr};
+    destroy_fn destroy_{nullptr};
+    move_fn move_{nullptr};
+
+    void clear() noexcept {
+        if(destroy_) destroy_(buf_);
+        invoke_  = nullptr;
+        destroy_ = nullptr;
+        move_    = nullptr;
+    }
+
+  public:
+    io_callback_t() = default;
+
+    template <typename F, typename = std::enable_if_t<
+                              !std::is_same_v<std::decay_t<F>, io_callback_t>>>
+    io_callback_t(F&& f) {
+        using Fn = std::decay_t<F>;
+        static_assert(sizeof(Fn) <= BUF_SIZE,
+            "io_callback_t: callable too large for inline buffer");
+        static_assert(std::is_nothrow_move_constructible_v<Fn>,
+            "io_callback_t: callable must be nothrow move constructible");
+        ::new(buf_) Fn(std::forward<F>(f));
+        invoke_ = [](void* p, int res) {
+            (*static_cast<Fn*>(p))(res);
+        };
+        destroy_ = [](void* p) {
+            static_cast<Fn*>(p)->~Fn();
+        };
+        move_ = [](void* src, void* dst) {
+            ::new(dst) Fn(std::move(*static_cast<Fn*>(src)));
+            static_cast<Fn*>(src)->~Fn();
+        };
+    }
+
+    io_callback_t(io_callback_t&& other) noexcept {
+        if(other.move_) {
+            other.move_(other.buf_, buf_);
+            invoke_        = other.invoke_;
+            destroy_       = other.destroy_;
+            move_          = other.move_;
+            other.invoke_  = nullptr;
+            other.destroy_ = nullptr;
+            other.move_    = nullptr;
+        }
+    }
+
+    io_callback_t& operator=(io_callback_t&& other) noexcept {
+        if(this != &other) {
+            clear();
+            if(other.move_) {
+                other.move_(other.buf_, buf_);
+                invoke_        = other.invoke_;
+                destroy_       = other.destroy_;
+                move_          = other.move_;
+                other.invoke_  = nullptr;
+                other.destroy_ = nullptr;
+                other.move_    = nullptr;
+            }
+        }
+        return *this;
+    }
+
+    io_callback_t(std::nullptr_t) noexcept { }
+
+    io_callback_t& operator=(std::nullptr_t) noexcept {
+        clear();
+        return *this;
+    }
+
+    ~io_callback_t() {
+        clear();
+    }
+
+    explicit operator bool() const noexcept {
+        return invoke_ != nullptr;
+    }
+
+    void operator()(int res) {
+        invoke_(buf_, res);
+    }
+};
 
 class co_excutor {
   public:
@@ -65,18 +160,16 @@ class co_excutor {
         return future.get();
     }
 
-    // 分离协程
+    // 分离协程 - 直接移动 task 到协程帧中，避免 shared_ptr 开销
     template <typename T>
     static void detach(task<T>&& t) {
-        auto dt = std::make_shared<task<T>>(std::move(t));
-
-        auto wrapper = [](std::shared_ptr<task<T>> inner) -> task<void> {
+        auto wrapper = [](task<T> inner) -> task<void> {
             try {
-                co_await std::move(*inner);
+                co_await std::move(inner);
             } catch(...) {
                 // swallow
             }
-        }(std::move(dt));
+        }(std::move(t));
 
         // Mark wrapper for self-destruction at final_suspend
         auto h                    = wrapper.handle();

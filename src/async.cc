@@ -19,11 +19,11 @@
 
 // -----------------------------------------------------------------------
 // read_awaitable: 使用 co_excutor async_io READ 读取一次可用数据
+// 优化：fd 已改为 raw int，避免 shared_ptr 拷贝开销
 // -----------------------------------------------------------------------
 
 bool connection::read_awaitable::await_ready() noexcept {
-    // 尝试读取，读到的话就不用挂起了
-    ssize_t n = ::recv(fd.handle(), buf.data(), buf.size(), MSG_DONTWAIT);
+    ssize_t n = ::recv(fd, buf.data(), buf.size(), MSG_DONTWAIT);
     if(n >= 0) {
         result = static_cast<size_t>(n);
         return true;
@@ -43,11 +43,10 @@ bool connection::read_awaitable::await_suspend(std::coroutine_handle<> h) {
             result = std::unexpected(-res);
         }
         h.resume();
-        return;
     };
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd.handle(),
-        buf.data(), buf.size(), std::forward<io_callback_t>(read_cb));
+    co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd, buf.data(),
+        buf.size(), std::move(read_cb));
     return true;
 }
 
@@ -64,29 +63,24 @@ bool connection::read_until_awaitable::await_ready() noexcept {
     total  = 0;
 
     while(total < target) {
-        ssize_t n = ::recv(
-            fd.handle(), buf.data() + total, target - total, MSG_DONTWAIT);
+        ssize_t n =
+            ::recv(fd, buf.data() + total, target - total, MSG_DONTWAIT);
         if(n > 0) {
             total += static_cast<size_t>(n);
             continue;
         }
 
         if(n == 0) {
-            // EOF — 对端关闭，返回已读取的字节数
             result = total;
             return true;
         }
 
-        // n < 0
-        if(errno == EAGAIN || errno == EWOULDBLOCK) {
-            return false; // 挂起，由 do_read 继续异步读取
-        }
+        if(errno == EAGAIN || errno == EWOULDBLOCK) { return false; }
 
         result = std::unexpected(errno);
         return true;
     }
 
-    // 全部读满
     result = total;
     return true;
 }
@@ -122,8 +116,8 @@ void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
     void* p    = buf.data() + total;
     size_t len = target - total;
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd.handle(), p,
-        len, std::forward<io_callback_t>(read_cb));
+    co_excutor::instance().async_io(
+        co_excutor::CO_EVENT::READ, fd, p, len, std::move(read_cb));
 }
 
 bool connection::read_until_awaitable::await_suspend(
@@ -162,17 +156,16 @@ void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
         }
 
         do_write(h);
-        return;
     };
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd.handle(), p,
+    co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd, p,
         buf.size() - written, std::move(write_cb));
 }
 
 bool connection::write_awaitable::await_ready() noexcept {
     ssize_t nsend = 0;
     while(written < buf.size()) {
-        nsend = ::send(fd.handle(), buf.data() + written, buf.size() - written,
+        nsend = ::send(fd, buf.data() + written, buf.size() - written,
             MSG_DONTWAIT | MSG_NOSIGNAL);
         if(nsend > 0) {
             written += static_cast<size_t>(nsend);
@@ -184,7 +177,6 @@ bool connection::write_awaitable::await_ready() noexcept {
         break;
     }
 
-    // 写完
     if(written >= buf.size()) {
         result = written;
         return true;
@@ -210,12 +202,23 @@ std::expected<size_t, int> connection::write_awaitable::await_resume() {
 // -----------------------------------------------------------------------
 
 bool acceptor::accept_awaitable::await_ready() const noexcept {
+    // Try non-blocking accept first to avoid suspending if connection is ready
+    socklen_t addrlen = sizeof(addr);
+    int client_fd     = ::accept4(fd,
+        const_cast<struct sockaddr*>(
+            reinterpret_cast<const struct sockaddr*>(&addr)),
+        &addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if(client_fd >= 0) {
+        const_cast<accept_awaitable*>(this)->result =
+            connection(FileDescriptor(client_fd));
+        return true;
+    }
     return false;
 }
 
 bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::ACCEPT, fd.handle(),
-        &addr, sizeof(addr), [this, h](int res) mutable {
+    co_excutor::instance().async_io(co_excutor::CO_EVENT::ACCEPT, fd, &addr,
+        sizeof(addr), [this, h](int res) mutable {
             if(res >= 0) {
                 result = connection(FileDescriptor(res));
             } else {
@@ -239,27 +242,25 @@ bool connect_awaitable::await_ready() const noexcept {
 }
 
 bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
-    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if(fd < 0) {
+    int raw_fd =
+        ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if(raw_fd < 0) {
         log::erro("socket failed: {}", std::strerror(errno));
         return false;
     }
 
-    // Set TCP_NODELAY to reduce latency
     int yes = 1;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    ::setsockopt(raw_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
-    conn_fd = FileDescriptor(fd);
+    conn_fd = FileDescriptor(raw_fd);
 
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(static_cast<uint16_t>(port));
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    // Initiate non-blocking connect before registering with asio
     int rc = ::connect(conn_fd.handle(),
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
     if(rc == 0) {
-        // 连接完成，不挂起
         result = connection(conn_fd);
         return false;
     }
@@ -268,7 +269,6 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
         return false;
     }
 
-    // Wait for connection completion
     co_excutor::instance().async_io(co_excutor::CO_EVENT::CONNECT,
         conn_fd.handle(), static_cast<void*>(&addr), sizeof(addr),
         [this, h](int res) mutable {

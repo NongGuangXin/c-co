@@ -7,6 +7,8 @@
 task<int> handle_client(connection conn) {
     constexpr size_t BUF_SIZE = 256 * 1024;
     std::vector<unsigned char> buffer(BUF_SIZE);
+    std::vector<unsigned char> write_buf;
+    write_buf.reserve(BUF_SIZE);
 
     while(true) {
         auto read_result = co_await conn.co_read(buffer);
@@ -15,9 +17,9 @@ task<int> handle_client(connection conn) {
         size_t bytes_read = read_result.value();
         if(bytes_read == 0) { break; }
 
-        std::span<unsigned char> to_send(buffer.data(), bytes_read);
-        auto write_result = co_await conn.co_write(
-            std::vector<unsigned char>(to_send.begin(), to_send.end()));
+        // Reuse write_buf to avoid heap allocation per echo
+        write_buf.assign(buffer.data(), buffer.data() + bytes_read);
+        auto write_result = co_await conn.co_write(write_buf);
         if(!write_result.has_value()) { break; }
     }
 

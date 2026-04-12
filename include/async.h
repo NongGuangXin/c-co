@@ -17,8 +17,10 @@ class connection {
     }
 
     // Awaitable for co_read: 读取一次可用数据
+    // 优化：使用 raw int fd 避免 shared_ptr 拷贝（connection 生命周期覆盖
+    // awaitable）
     struct read_awaitable {
-        FileDescriptor fd;
+        int fd;
         std::vector<unsigned char>& buf;
         std::expected<size_t, int> result;
 
@@ -31,7 +33,7 @@ class connection {
     struct read_until_awaitable {
         size_t target;
         size_t total;
-        FileDescriptor fd;
+        int fd;
         std::vector<unsigned char>& buf;
         std::vector<unsigned char> remain;
         std::expected<size_t, int> result;
@@ -45,7 +47,7 @@ class connection {
 
     // Awaitable for co_write (handles short writes)
     struct write_awaitable {
-        FileDescriptor fd;
+        int fd;
         const std::vector<unsigned char>& buf;
         size_t written;
         std::expected<size_t, int> result;
@@ -65,15 +67,15 @@ class connection {
         连接关闭或错误前读取的数据在buf中，可用size()获取实际读取长度
      */
     read_awaitable co_read(std::vector<unsigned char>& buf) {
-        return read_awaitable{fd_, buf, {}};
+        return read_awaitable{fd_.handle(), buf, {}};
     }
 
     read_until_awaitable co_read_until(std::vector<unsigned char>& buf) {
-        return read_until_awaitable{0, 0, fd_, buf, {}, {}};
+        return read_until_awaitable{0, 0, fd_.handle(), buf, {}, {}};
     }
 
     write_awaitable co_write(const std::vector<unsigned char>& buf) {
-        return write_awaitable{fd_, buf, 0, {}};
+        return write_awaitable{fd_.handle(), buf, 0, {}};
     }
 
   private:
@@ -91,7 +93,7 @@ class acceptor {
 
     struct accept_awaitable {
         connection result;
-        FileDescriptor fd;
+        int fd;
         struct sockaddr_storage addr;
 
         bool await_ready() const noexcept;
@@ -100,7 +102,7 @@ class acceptor {
     };
 
     accept_awaitable co_accept() {
-        return accept_awaitable{{}, fd_, {}};
+        return accept_awaitable{{}, fd_.handle(), {}};
     }
 
   private:

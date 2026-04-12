@@ -27,27 +27,33 @@ static const std::vector<unsigned char> response_close_bytes(
 static const std::vector<unsigned char> response_keepalive_bytes(
     http_response_keepalive.begin(), http_response_keepalive.end());
 
+// Fast case-insensitive search for "keep-alive" in buffer
+static bool has_keep_alive(const unsigned char* data, size_t len) {
+    // Search for "eep-" which is unique enough and covers both cases
+    for(size_t i = 0; i + 10 <= len; i++) {
+        char c = static_cast<char>(data[i]);
+        if((c == 'K' || c == 'k') &&
+            (data[i + 1] == 'e' || data[i + 1] == 'E') &&
+            (data[i + 2] == 'e' || data[i + 2] == 'E') && data[i + 3] == 'p' &&
+            data[i + 4] == '-') {
+            return true;
+        }
+    }
+    return false;
+}
+
 task<int> handle_client(connection conn) {
-    std::vector<unsigned char> buffer(1024);
+    std::vector<unsigned char> buffer(4096);
 
     while(true) {
-        // Read the request
         auto read_result = co_await conn.co_read(buffer);
         if(!read_result.has_value() || read_result.value() == 0) {
             co_return -1;
         }
 
-        // Check if the request asks for keep-alive (simple heuristic)
-        // ab sends "Connection: Keep-Alive" when using -k flag
         size_t bytes_read = read_result.value();
-        std::string_view req(
-            reinterpret_cast<const char*>(buffer.data()), bytes_read);
+        bool keep_alive   = has_keep_alive(buffer.data(), bytes_read);
 
-        bool keep_alive = (req.find("keep-alive") != std::string_view::npos) ||
-                          (req.find("Keep-Alive") != std::string_view::npos) ||
-                          (req.find("Keep-alive") != std::string_view::npos);
-
-        // Write the HTTP response
         const auto& resp =
             keep_alive ? response_keepalive_bytes : response_close_bytes;
         auto write_result = co_await conn.co_write(resp);

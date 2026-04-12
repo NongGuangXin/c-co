@@ -9,7 +9,6 @@
 #include <atomic>
 #include <utility>
 #include <vector>
-#include <unordered_set>
 
 #include <liburing.h>
 #include <unistd.h>
@@ -28,63 +27,53 @@ struct uring_io_context {
     void* buf;
     size_t len;
     io_callback_t cb;
-
-    void reset(
-        co_excutor::CO_EVENT ev, int f, void* b, size_t l, io_callback_t&& c) {
-        event = ev;
-        fd    = f;
-        buf   = b;
-        len   = l;
-        cb    = c;
-    }
 };
 
 // ---------------------------------------------------------------------------
-// uring_instance: 独立的 ring + event_loop + per-instance 对象池 + inflight
-// 跟踪
+// uring_instance: 独立的 ring + event_loop + per-instance 对象池
+// 优化：移除 inflight 跟踪，减少锁争用；单锁保护 freelist
 // ---------------------------------------------------------------------------
 
 class uring_instance {
   public:
     explicit uring_instance(std::atomic<bool>& running): running_(running) {
         struct io_uring_params params{};
-        int ret = io_uring_queue_init_params(2048, &ring_, &params);
-        if(ret < 0) {
+        int rc = io_uring_queue_init_params(4096, &ring_, &params);
+        if(rc < 0) {
             log::erro("excutor_uring: io_uring_queue_init failed: {}",
-                std::strerror(-ret));
+                std::strerror(-rc));
             throw std::runtime_error("io_uring_queue_init failed");
         }
     }
 
     ~uring_instance() {
-        // 释放所有 in-flight ctx（不回调，进程正在退出）
-        for(auto* ctx: inflight_) {
-            ctx->cb  = nullptr;
-            ctx->buf = nullptr;
-            delete ctx;
-        }
-        inflight_.clear();
-
         io_uring_queue_exit(&ring_);
         for(auto* p: freelist_) delete p;
     }
 
     void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
         io_callback_t&& cb) {
-        if(!running_.load(std::memory_order_acquire)) {
-            // 进程退出中，静默丢弃，不回调（避免无限循环）
-            return;
-        }
-        auto* ctx =
-            acquire_ctx(event, fd, buf, len, std::forward<io_callback_t>(cb));
+        if(!running_.load(std::memory_order_relaxed)) { return; }
+
+        auto* ctx  = acquire_ctx();
+        ctx->event = event;
+        ctx->fd    = fd;
+        ctx->buf   = buf;
+        ctx->len   = len;
+        ctx->cb    = std::move(cb);
 
         std::lock_guard lock(sq_mutex_);
         struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
         if(!sqe) {
-            log::erro("excutor_uring: io_uring_get_sqe failed fd={}", fd);
-            ctx->cb(-ENOMEM);
-            release_ctx(ctx);
-            return;
+            // SQ full - force submit and retry
+            io_uring_submit(&ring_);
+            sqe = io_uring_get_sqe(&ring_);
+            if(!sqe) {
+                log::erro("excutor_uring: io_uring_get_sqe failed fd={}", fd);
+                ctx->cb(-ENOMEM);
+                release_ctx(ctx);
+                return;
+            }
         }
 
         prep_sqe(sqe, ctx, event, fd, buf, len);
@@ -93,11 +82,11 @@ class uring_instance {
     }
 
     void event_loop() {
-        while(running_) {
+        while(running_.load(std::memory_order_relaxed)) {
             struct io_uring_cqe* cqe = nullptr;
             struct __kernel_timespec ts{};
             ts.tv_sec  = 0;
-            ts.tv_nsec = 10'000'000; // 10ms - reduced from 100ms
+            ts.tv_nsec = 5'000'000; // 5ms
 
             int ret = io_uring_wait_cqe_timeout(&ring_, &cqe, &ts);
             if(ret < 0) {
@@ -115,7 +104,6 @@ class uring_instance {
                     static_cast<uring_io_context*>(io_uring_cqe_get_data(cqe));
                 if(!ctx) continue;
 
-                // 【可选】优化选项，性能改进有限
                 if(ctx->event == co_excutor::CO_EVENT::ACCEPT &&
                     cqe->res >= 0) {
                     optimize_socket(cqe->res);
@@ -130,7 +118,7 @@ class uring_instance {
 
     static void optimize_socket(int fd) {
         int yes     = 1;
-        int bufsize = 262142;
+        int bufsize = 1048576; // 1MB socket buffers for better throughput
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
         ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
@@ -165,9 +153,7 @@ class uring_instance {
         }
     }
 
-    // per-instance 对象池 + inflight 跟踪（用同一把锁）
-    uring_io_context* acquire_ctx(co_excutor::CO_EVENT event, int fd, void* buf,
-        size_t len, io_callback_t&& cb) {
+    uring_io_context* acquire_ctx() {
         uring_io_context* ctx = nullptr;
         {
             std::lock_guard lock(ctx_mutex_);
@@ -177,11 +163,6 @@ class uring_instance {
             }
         }
         if(!ctx) ctx = new uring_io_context();
-        ctx->reset(event, fd, buf, len, std::forward<io_callback_t>(cb));
-        {
-            std::lock_guard lock(ctx_mutex_);
-            inflight_.insert(ctx);
-        }
         return ctx;
     }
 
@@ -190,7 +171,6 @@ class uring_instance {
         ctx->buf = nullptr;
         ctx->len = 0;
         std::lock_guard lock(ctx_mutex_);
-        inflight_.erase(ctx);
         freelist_.push_back(ctx);
     }
 
@@ -198,8 +178,7 @@ class uring_instance {
     std::mutex sq_mutex_;
     std::atomic<bool>& running_;
 
-    std::mutex ctx_mutex_; // 保护 inflight_ 和 freelist_
-    std::unordered_set<uring_io_context*> inflight_;
+    std::mutex ctx_mutex_;
     std::vector<uring_io_context*> freelist_;
 };
 
@@ -220,6 +199,7 @@ class excutor_uring_impl {
         for(size_t i = 0; i < num_cpus; i++) {
             loop_threads_.emplace_back(
                 [this, i]() { instances_[i]->event_loop(); });
+            bind_thread_to_cpu(loop_threads_.back(), static_cast<int>(i));
         }
 
         log::dbug("excutor_uring: {} io_uring event loops started", num_cpus);
