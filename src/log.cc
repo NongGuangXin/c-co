@@ -9,6 +9,7 @@
 #else
 #include <chrono>
 #include <iostream>
+#include <iomanip>
 #endif
 
 std::string_view Fmt::file_name() noexcept {
