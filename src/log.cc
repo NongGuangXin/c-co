@@ -1,12 +1,12 @@
 #include "log.h"
 #include <atomic>
-#include <mutex>
 #include <string_view>
 
 #ifdef USE_SPDLOG
 #include "spdlog/common.h"
 #include "spdlog/spdlog.h"
 #else
+#include <mutex>
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -31,10 +31,11 @@ using Level                           = log::Level;
 static std::atomic<Level> G_LOG_LEVEL = Level::INFO;
 
 log::impl::impl() {
-    std::ios_base::sync_with_stdio(false);
-    std::cin.tie(nullptr);
 #ifdef USE_SPDLOG
     spdlog::set_level(spdlog::level::debug);
+#else
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(nullptr);
 #endif
 }
 

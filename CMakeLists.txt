@@ -11,8 +11,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+option(USE_SPDLOG "Enable spdlog logging" OFF)
+if(USE_SPDLOG)
+    add_compile_definitions(USE_SPDLOG)
+endif()
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -march=native -DNDEBUG")
 elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -40,8 +44,10 @@ set(TEST_TARGETS
 
 # --- epoll backend ---
 add_library(c++co_epoll SHARED ${COMMON_SRCS} src/excutor_epoll.cc)
-# epoll backend does not need liburing
 target_link_libraries(c++co_epoll PUBLIC pthread)
+if(USE_SPDLOG)
+    target_link_libraries(c++co_epoll PUBLIC spdlog fmt)
+endif()
 
 foreach(entry ${TEST_TARGETS})
     string(REPLACE ":" ";" parts ${entry})
@@ -58,6 +64,9 @@ endforeach()
 add_library(c++co_uring SHARED ${COMMON_SRCS} src/excutor_iouring.cc)
 target_compile_definitions(c++co_uring PUBLIC USE_URING)
 target_link_libraries(c++co_uring PUBLIC uring)
+if(USE_SPDLOG)
+    target_link_libraries(c++co_uring PUBLIC spdlog fmt)
+endif()
 
 foreach(entry ${TEST_TARGETS})
     string(REPLACE ":" ";" parts ${entry})

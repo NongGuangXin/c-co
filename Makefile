@@ -6,11 +6,15 @@ prebuild:
 	@mkdir -p build
 
 build: prebuild
-	@cmake -S . -B build -G "Ninja"
+	@cmake -S . -B build -G "Ninja" $(CMAKE_EXTRA_ARGS)
 	@cmake --build build/
 
 release: prebuild
-	@cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+	@cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release $(CMAKE_EXTRA_ARGS)
+	@cmake --build build/
+
+with_spdlog: prebuild
+	@cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DUSE_SPDLOG=ON $(CMAKE_EXTRA_ARGS)
 	@cmake --build build/
 
 run: build
