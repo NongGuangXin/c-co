@@ -115,12 +115,10 @@ class uring_instance {
                     static_cast<uring_io_context*>(io_uring_cqe_get_data(cqe));
                 if(!ctx) continue;
 
-                // Set TCP_NODELAY on accepted connections
+                // 【可选】优化选项，性能改进有限
                 if(ctx->event == co_excutor::CO_EVENT::ACCEPT &&
                     cqe->res >= 0) {
-                    int yes = 1;
-                    ::setsockopt(
-                        cqe->res, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+                    optimize_socket(cqe->res);
                 }
 
                 ctx->cb(cqe->res);
@@ -128,6 +126,15 @@ class uring_instance {
             }
             io_uring_cq_advance(&ring_, count);
         }
+    }
+
+    static void optimize_socket(int fd) {
+        int yes     = 1;
+        int bufsize = 262142;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &bufsize, sizeof(bufsize));
     }
 
   private:

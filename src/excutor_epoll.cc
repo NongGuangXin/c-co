@@ -212,17 +212,22 @@ class epoll_instance {
         return (n >= 0) ? static_cast<int>(n) : -errno;
     }
 
+    static void optimize_socket(int fd) {
+        int yes     = 1;
+        int bufsize = 262142;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &bufsize, sizeof(bufsize));
+    }
+
     static int do_accept(epoll_io_context* ctx) {
         int client_fd =
             ::accept4(ctx->fd, static_cast<struct sockaddr*>(ctx->buf),
                 reinterpret_cast<socklen_t*>(&ctx->len),
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if(client_fd >= 0) {
-            // Set TCP_NODELAY on accepted connections to reduce latency
-            int yes = 1;
-            ::setsockopt(
-                client_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-        }
+        // 【可选】优化选项，性能改进有限
+        if(client_fd >= 0) { optimize_socket(client_fd); }
         return (client_fd >= 0) ? client_fd : -errno;
     }
 
