@@ -48,6 +48,7 @@ void log::impl::write(Level level, std::string_view str) {
     size_t idx = static_cast<size_t>(level);
     functable[idx](str);
 }
+void log::impl::flush() { }
 #else
 std::string format_timestamp() {
     auto now        = std::chrono::system_clock::now();
@@ -79,9 +80,12 @@ void log::impl::write(Level level, std::string_view str) {
     std::string time = format_timestamp();
     {
         std::lock_guard<std::mutex> lock(log_lock);
-        std::cout << format_timestamp() << "[" << level_to_string(level) << "] "
-                  << str << "\n";
+        std::cout << time << "[" << level_to_string(level) << "] " << str
+                  << "\n";
     }
+}
+
+void log::impl::flush() {
     std::cout.flush();
 }
 #endif

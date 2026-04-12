@@ -3,39 +3,66 @@
 #include "log.h"
 #include "task.h"
 
-#include <csignal>
 #include <cstdlib>
 #include <string>
 
-static const std::string http_response = "HTTP/1.1 200 OK\r\n"
-                                         "Content-Type: text/plain\r\n"
-                                         "Content-Length: 13\r\n"
-                                         "Connection: close\r\n"
-                                         "\r\n"
-                                         "Hello, World!";
+static const std::string http_response_close = "HTTP/1.1 200 OK\r\n"
+                                               "Content-Type: text/plain\r\n"
+                                               "Content-Length: 13\r\n"
+                                               "Connection: close\r\n"
+                                               "\r\n"
+                                               "Hello, World!";
 
-static const std::vector<unsigned char> response_bytes(
-    http_response.begin(), http_response.end());
+static const std::string http_response_keepalive =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/plain\r\n"
+    "Content-Length: 13\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n"
+    "Hello, World!";
+
+static const std::vector<unsigned char> response_close_bytes(
+    http_response_close.begin(), http_response_close.end());
+
+static const std::vector<unsigned char> response_keepalive_bytes(
+    http_response_keepalive.begin(), http_response_keepalive.end());
 
 task<int> handle_client(connection conn) {
-    std::vector<unsigned char> buffer(4096);
+    std::vector<unsigned char> buffer(1024);
 
-    // Read the request (just consume it)
-    auto read_result = co_await conn.co_read(buffer);
-    if(!read_result.has_value() || read_result.value() == 0) { co_return -1; }
+    while(true) {
+        // Read the request
+        auto read_result = co_await conn.co_read(buffer);
+        if(!read_result.has_value() || read_result.value() == 0) {
+            co_return -1;
+        }
 
-    // Write the HTTP response
-    auto write_result = co_await conn.co_write(response_bytes);
-    if(!write_result.has_value()) {
-        log::erro("write error:{}", write_result.error());
+        // Check if the request asks for keep-alive (simple heuristic)
+        // ab sends "Connection: Keep-Alive" when using -k flag
+        bool keep_alive   = false;
+        size_t bytes_read = read_result.value();
+        std::string_view req(
+            reinterpret_cast<const char*>(buffer.data()), bytes_read);
+        if(req.find("keep-alive") != std::string_view::npos ||
+            req.find("Keep-Alive") != std::string_view::npos ||
+            req.find("Keep-alive") != std::string_view::npos) {
+            keep_alive = true;
+        }
+
+        // Write the HTTP response
+        const auto& resp =
+            keep_alive ? response_keepalive_bytes : response_close_bytes;
+        auto write_result = co_await conn.co_write(resp);
+        if(!write_result.has_value()) { co_return -1; }
+
+        if(!keep_alive) { co_return 0; }
     }
-
-    co_return 0;
 }
 
 task<int> server(acceptor& ac) {
     log::info("Http server started, waiting for connections...");
-    log::set_level(log::Level::WARN);
+    log::flush();
+    log::set_level(log::Level::ERRO);
 
     while(true) {
         connection conn = co_await ac.co_accept();
@@ -49,6 +76,7 @@ task<int> server(acceptor& ac) {
         // 分离协程，不阻塞调用者
         co_excutor::detach(handle_client(conn));
     }
+    co_return 0;
 }
 
 int main() {

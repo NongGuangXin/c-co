@@ -6,32 +6,25 @@
 #include <cstring>
 #include <random>
 
-std::vector<unsigned char> generate_random_ascii(size_t count) {
-    std::vector<unsigned char> result;
-    if(count > result.max_size()) {
-        throw std::length_error("count exceeds vector<char> maximum capacity");
-    }
-    if(count == 0) {
-        return result; // 快速返回空vector
-    }
-    // 2. 预分配空间：避免循环中多次扩容，提升性能
-    result.reserve(count);
-    // 3. 初始化随机数生成器（优先用非确定性随机设备，否则回退到高分辨率时间戳）
+// Thread-local RNG to avoid re-seeding each call
+static thread_local std::mt19937 tl_rng = []() {
     std::random_device rd;
-    std::mt19937 rng; // 梅森旋转算法，性能好、周期长
+    std::mt19937 rng;
     if(rd.entropy() > 0) {
-        // 有可用熵源（大多数现代桌面/服务器平台支持）
         rng.seed(rd());
     } else {
-        // 无可用熵源（旧编译器/嵌入式），回退到时间戳
         auto now = std::chrono::high_resolution_clock::now();
         rng.seed(static_cast<unsigned long>(now.time_since_epoch().count()));
     }
-    // 4. 均匀分布器：限定范围为ASCII可见字符 [32, 126]
+    return rng;
+}();
+
+std::vector<unsigned char> generate_random_ascii(size_t count) {
+    std::vector<unsigned char> result(count);
+    if(count == 0) { return result; }
     std::uniform_int_distribution<int> dist(32, 126);
-    // 5. 循环生成字符
     for(size_t i = 0; i < count; ++i) {
-        result.push_back(static_cast<unsigned char>(dist(rng)));
+        result[i] = static_cast<unsigned char>(dist(tl_rng));
     }
     return result;
 }

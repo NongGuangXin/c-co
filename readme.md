@@ -116,7 +116,7 @@ cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
 ```bash
 ./build/bin/epoll/http_server
 
-ab -c 100 -n 100000 http://127.0.0.1:9999/
+ab -c 100 -n 100000 [-k] http://127.0.0.1:9999/
 ```
 
 ### Pingpong 基准测试

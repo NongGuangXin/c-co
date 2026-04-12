@@ -8,6 +8,7 @@
 
 #include <expected>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
@@ -237,6 +238,10 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
         return false;
     }
 
+    // Set TCP_NODELAY to reduce latency
+    int yes = 1;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
     conn_fd = FileDescriptor(fd);
 
     addr.sin_family      = AF_INET;
@@ -299,7 +304,7 @@ acceptor co_listen(int port) {
         return acceptor{};
     }
 
-    if(::listen(fd, 128) < 0) {
+    if(::listen(fd, 4096) < 0) {
         log::erro("listen failed: {}", std::strerror(errno));
         ::close(fd);
         return acceptor{};

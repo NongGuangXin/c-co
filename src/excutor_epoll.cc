@@ -18,6 +18,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
 
 // ---------------------------------------------------------------------------
 // excutor_epoll 实现：多 epoll 实例，按 fd 分片，并行处理就绪事件
@@ -83,7 +85,7 @@ class epoll_instance {
         io_callback_t&& cb) {
         if(!initialized_ || !running_) { return; }
 
-        auto* ctx = new epoll_io_context{event, fd, buf, len, cb};
+        auto* ctx = new epoll_io_context{event, fd, buf, len, std::move(cb)};
 
         uint32_t epoll_events = EPOLLONESHOT | EPOLLET;
         switch(event) {
@@ -138,11 +140,11 @@ class epoll_instance {
 
     // event_loop 由外部线程调用
     void event_loop() {
-        static constexpr int MAX_EVENTS = 64;
+        static constexpr int MAX_EVENTS = 256;
         struct epoll_event events[MAX_EVENTS];
 
         while(running_) {
-            int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 100);
+            int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 10);
 
             if(nfds < 0) {
                 if(errno == EINTR) continue;
@@ -215,6 +217,12 @@ class epoll_instance {
             ::accept4(ctx->fd, static_cast<struct sockaddr*>(ctx->buf),
                 reinterpret_cast<socklen_t*>(&ctx->len),
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if(client_fd >= 0) {
+            // Set TCP_NODELAY on accepted connections to reduce latency
+            int yes = 1;
+            ::setsockopt(
+                client_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        }
         return (client_fd >= 0) ? client_fd : -errno;
     }
 

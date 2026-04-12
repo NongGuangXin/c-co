@@ -98,11 +98,11 @@ static void thread_func(
         return;
     }
 
-    constexpr int MAX_EVENTS = 256;
+    constexpr int MAX_EVENTS = 512;
     struct epoll_event events[MAX_EVENTS];
 
     while(g_running.load(std::memory_order_relaxed)) {
-        int n = epoll_wait(epfd, events, MAX_EVENTS, 10);
+        int n = epoll_wait(epfd, events, MAX_EVENTS, 5);
         for(int i = 0; i < n; i++) {
             int fd      = events[i].data.fd;
             uint32_t ev = events[i].events;
@@ -115,7 +115,7 @@ static void thread_func(
 
             if(ev & EPOLLOUT) {
                 // Connected or writable: send message
-                ssize_t nw = ::write(fd, msg.data(), msg.size());
+                ssize_t nw = ::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL);
                 if(nw <= 0) {
                     if(errno != EAGAIN && errno != EWOULDBLOCK) {
                         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
@@ -123,35 +123,39 @@ static void thread_func(
                     }
                     continue;
                 }
-                // Switch to reading
+                // Switch to reading with edge-triggered
                 struct epoll_event rev{};
-                rev.events  = EPOLLIN;
+                rev.events  = EPOLLIN | EPOLLET;
                 rev.data.fd = fd;
                 epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &rev);
             }
 
             if(ev & EPOLLIN) {
-                ssize_t nr = ::read(fd, buf.data(), buf.size());
-                if(nr <= 0) {
-                    if(nr == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
-                        close(fd);
+                // Edge-triggered: drain all available data
+                for(;;) {
+                    ssize_t nr = ::recv(fd, buf.data(), buf.size(), 0);
+                    if(nr <= 0) {
+                        if(nr == 0) {
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
+                            close(fd);
+                        }
+                        // EAGAIN means we drained everything
+                        break;
                     }
-                    continue;
-                }
-                stats.read_count++;
-                stats.read_bytes += nr;
+                    stats.read_count++;
+                    stats.read_bytes += nr;
 
-                // Ping back
-                ssize_t nw = ::write(fd, msg.data(), msg.size());
-                if(nw <= 0) {
-                    if(errno != EAGAIN && errno != EWOULDBLOCK) {
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
-                        close(fd);
+                    // Ping back immediately
+                    ssize_t nw =
+                        ::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL);
+                    if(nw <= 0) {
+                        if(errno != EAGAIN && errno != EWOULDBLOCK) {
+                            epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
+                            close(fd);
+                        }
+                        break;
                     }
-                    continue;
                 }
-                // Stay in EPOLLIN - level triggered so we'll get notified again
             }
         }
     }

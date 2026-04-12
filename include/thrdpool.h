@@ -6,7 +6,7 @@
 #include <thread>
 class thrdpool final {
   public:
-    explicit thrdpool(size_t num_threads = 2);
+    explicit thrdpool(size_t num_threads = 4);
     ~thrdpool();
 
     using task_t = std::function<void()>;

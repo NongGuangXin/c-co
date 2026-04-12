@@ -2,36 +2,25 @@
 #include "co_excutor.h"
 #include "log.h"
 #include "task.h"
-
-#include <csignal>
 #include <cstdlib>
 
 task<int> handle_client(connection conn) {
-    std::vector<unsigned char> buffer(8192);
+    constexpr size_t BUF_SIZE = 65536;
+    std::vector<unsigned char> buffer(BUF_SIZE);
 
     while(true) {
+        buffer.resize(BUF_SIZE);
         auto read_result = co_await conn.co_read(buffer);
-        if(!read_result.has_value()) {
-            log::erro("read error:{}", read_result.error());
-            break;
-        }
+        if(!read_result.has_value()) { break; }
 
         size_t bytes_read = read_result.value();
-        if(bytes_read == 0) {
-            log::info("client disconnected\n");
-            break;
-        }
-        log::info("read {} byte from client", bytes_read);
+        if(bytes_read == 0) { break; }
 
-        std::vector<unsigned char> response(
-            buffer.begin(), buffer.begin() + bytes_read);
-        auto write_result = co_await conn.co_write(response);
-        if(!write_result.has_value()) {
-            log::erro("write error:{}", write_result.error());
-            break;
-        }
-
-        // log::info("Echoed {} byte to client\n", bytes_read);
+        // Resize to exact read size so co_write sends only valid data
+        // This avoids allocating a new vector - resize doesn't free memory
+        buffer.resize(bytes_read);
+        auto write_result = co_await conn.co_write(buffer);
+        if(!write_result.has_value()) { break; }
     }
 
     co_return 0;
@@ -39,7 +28,8 @@ task<int> handle_client(connection conn) {
 
 task<int> server(acceptor& ac) {
     log::info("Echo server started, waiting for connections...");
-    log::set_level(log::Level::WARN);
+    log::flush();
+    log::set_level(log::Level::ERRO);
 
     while(true) {
         connection conn = co_await ac.co_accept();
@@ -53,6 +43,7 @@ task<int> server(acceptor& ac) {
         // 分离协程，不阻塞调用者
         co_excutor::detach(handle_client(conn));
     }
+    co_return 0;
 }
 
 int main() {

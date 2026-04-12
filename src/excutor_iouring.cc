@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
 
 // ---------------------------------------------------------------------------
 // uring_io_context: 可池化的上下文结构体
@@ -95,7 +97,7 @@ class uring_instance {
             struct io_uring_cqe* cqe = nullptr;
             struct __kernel_timespec ts{};
             ts.tv_sec  = 0;
-            ts.tv_nsec = 100'000'000; // 100ms
+            ts.tv_nsec = 10'000'000; // 10ms - reduced from 100ms
 
             int ret = io_uring_wait_cqe_timeout(&ring_, &cqe, &ts);
             if(ret < 0) {
@@ -112,6 +114,14 @@ class uring_instance {
                 auto* ctx =
                     static_cast<uring_io_context*>(io_uring_cqe_get_data(cqe));
                 if(!ctx) continue;
+
+                // Set TCP_NODELAY on accepted connections
+                if(ctx->event == co_excutor::CO_EVENT::ACCEPT &&
+                    cqe->res >= 0) {
+                    int yes = 1;
+                    ::setsockopt(
+                        cqe->res, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+                }
 
                 ctx->cb(cqe->res);
                 release_ctx(ctx);

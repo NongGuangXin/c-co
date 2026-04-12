@@ -63,6 +63,10 @@ class log {
         __impl().write(Level::ERRO, str);
     }
 
+    static void flush() {
+        __impl().flush();
+    };
+
   public:
     static void set_level(Level level) {
         __impl().set_level(level);
@@ -78,6 +82,7 @@ class log {
 
     struct impl {
         void write(Level level, std::string_view str);
+        void flush();
 
         bool check(Level level);
         Level get_level();
