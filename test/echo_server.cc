@@ -44,11 +44,14 @@ task<int> server(acceptor& ac) {
     co_return 0;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     log::set_level(log::Level::INFO);
     log::info("{} start", __func__);
 
-    acceptor ac = co_listen(9999);
+    int port = 9999;
+    if(argc > 1) { port = atoi(argv[1]); }
+
+    acceptor ac = co_listen(port);
     if(!ac) {
         log::erro("listen error");
         return -1;

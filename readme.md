@@ -98,6 +98,24 @@ cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Debug
 
 ## 运行示例
 
+### 运行对比测试
+
+```bash
+./bench.sh
+
+==============================================
+         Performance Comparison
+==============================================
+
+Test                      Epoll         IoUring          Winner
+--------------- --------------- --------------- ---------------
+pingpong              1252 MB/s       1150 MB/s           Epoll
+http             22460.96 req/s  22647.70 req/s         IoUring
+http -k          69630.61 req/s  67345.96 req/s           Epoll
+
+All tests passed!
+```
+
 ### 回显服务器/客户端
 
 ```bash
