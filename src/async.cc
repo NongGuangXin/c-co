@@ -58,21 +58,52 @@ std::expected<size_t, int> connection::read_awaitable::await_resume() {
 // read_until_awaitable: 持续读取直到填满buf
 // -----------------------------------------------------------------------
 
-bool connection::read_until_awaitable::await_ready() const noexcept {
-    return false;
+bool connection::read_until_awaitable::await_ready() noexcept {
+    target = buf.size();
+    total  = 0;
+
+    while(total < target) {
+        ssize_t n = ::recv(
+            fd.handle(), buf.data() + total, target - total, MSG_DONTWAIT);
+        if(n > 0) {
+            total += static_cast<size_t>(n);
+            continue;
+        }
+
+        if(n == 0) {
+            // EOF — 对端关闭，返回已读取的字节数
+            result = total;
+            return true;
+        }
+
+        // n < 0
+        if(errno == EAGAIN || errno == EWOULDBLOCK) {
+            return false; // 挂起，由 do_read 继续异步读取
+        }
+
+        result = std::unexpected(errno);
+        return true;
+    }
+
+    // 全部读满
+    result = total;
+    return true;
 }
 
 void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
     io_callback_t read_cb = [this, h](int res) mutable {
         if(res < 0) {
+            if(-res == EAGAIN || -res == EWOULDBLOCK) {
+                do_read(h);
+                return;
+            }
             result = std::unexpected(-res);
             h.resume();
             return;
         }
 
         if(res == 0) {
-            // EOF — 对端关闭，返回已读取的字节数
-            result = total;
+            result = 0;
             h.resume();
             return;
         }
@@ -96,9 +127,6 @@ void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
 
 bool connection::read_until_awaitable::await_suspend(
     std::coroutine_handle<> h) {
-    target = buf.size();
-    total  = 0;
-
     do_read(h);
     return true;
 }
@@ -154,9 +182,7 @@ bool connection::write_awaitable::await_ready() noexcept {
         return true;
     }
 
-    if(nsend >= 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
-        return false;
-    }
+    if(nsend >= 0 || errno == EAGAIN || errno == EWOULDBLOCK) { return false; }
 
     result = std::unexpected(errno);
     return true;

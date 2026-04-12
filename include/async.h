@@ -38,7 +38,7 @@ class connection {
 
         void do_read(std::coroutine_handle<> h);
 
-        bool await_ready() const noexcept;
+        bool await_ready() noexcept;
         bool await_suspend(std::coroutine_handle<> h);
         std::expected<size_t, int> await_resume();
     };

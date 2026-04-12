@@ -200,7 +200,6 @@ class epoll_instance {
         if(nread >= 0) {
             return static_cast<int>(nread);
         } else {
-            if(errno == EAGAIN || errno == EWOULDBLOCK) { return 0; }
             return -errno;
         }
     }
