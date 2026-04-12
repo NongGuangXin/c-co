@@ -3,15 +3,16 @@
 #include "log.h"
 
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 
 #include <arpa/inet.h>
+#include <expected>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <vector>
-#include <algorithm>
 
 // -----------------------------------------------------------------------
 // read_awaitable: 使用 co_excutor async_io READ 读取一次可用数据
@@ -23,11 +24,9 @@ bool connection::read_awaitable::await_ready() const noexcept {
 
 bool connection::read_awaitable::await_suspend(std::coroutine_handle<> h) {
     co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd.handle(),
-        buf, [this, h](int res) mutable {
-            if(res > 0) {
+        buf.data(), buf.size(), [this, h](int res) mutable {
+            if(res >= 0) {
                 result = static_cast<size_t>(res);
-            } else if(res == 0) {
-                result = static_cast<size_t>(0);
             } else {
                 result = std::unexpected(-res);
             }
@@ -45,56 +44,44 @@ std::expected<size_t, int> connection::read_awaitable::await_resume() {
 // read_until_awaitable: 持续读取直到填满buf
 // -----------------------------------------------------------------------
 
-void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
-    ssize_t need = static_cast<ssize_t>(target - total);
-
-    co_excutor::io_callback_t read_cb = [this, h](int res) mutable {
-        if(res > 0) {
-            size_t bytes_read = static_cast<size_t>(res);
-
-            std::copy(remain.begin(), remain.begin() + bytes_read,
-                buf.begin() + total);
-            total += bytes_read;
-            if(total >= target) {
-                result = total;
-                h.resume();
-                return;
-            }
-
-            // 未读满，继续提交
-            remain.resize(target - total);
-            do_read(h);
-            return;
-        } else if(res == 0) {
-            // 对端关闭：result = 0 表示 EOF
-            // partial data 保留在 buf 中，buf.size() == total
-            buf.resize(total);
-            result = static_cast<size_t>(0);
-            h.resume();
-            return;
-        } else { // 错误
-            if(total > 0) { buf.resize(total); }
-            result = std::unexpected(-res);
-            h.resume();
-        }
-        return;
-    };
-
-    // 使用 async_io 读取一次可用数据
-    // 如果读取的数据不够，则继续提交读取请求
-    // 如果读取的数据够，则返回
-    // 如果读取的数据不够，且遇到 EOF/错误，则返回
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd.handle(),
-        remain, std::move(read_cb), need);
-}
-
 bool connection::read_until_awaitable::await_ready() const noexcept {
     return false;
 }
 
+void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
+    co_excutor::io_callback_t read_cb = [this, h](int res) mutable {
+        if(res < 0) {
+            result = std::unexpected(-res);
+            h.resume();
+            return;
+        }
+
+        if(res == 0) {
+            // EOF — 对端关闭，返回已读取的字节数
+            result = total;
+            h.resume();
+            return;
+        }
+
+        total += static_cast<size_t>(res);
+        if(total >= target) {
+            result = total;
+            h.resume();
+            return;
+        }
+
+        do_read(h);
+    };
+
+    void* p    = buf.data() + total;
+    size_t len = target - total;
+
+    co_excutor::instance().async_io(
+        co_excutor::CO_EVENT::READ, fd.handle(), p, len, std::move(read_cb));
+}
+
 bool connection::read_until_awaitable::await_suspend(
     std::coroutine_handle<> h) {
-    remain.resize(buf.size());
     target = buf.size();
     total  = 0;
 
@@ -129,8 +116,10 @@ void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
         return;
     };
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd.handle(),
-        const_cast<std::vector<unsigned char>&>(buf), write_cb, written);
+    void* p = const_cast<unsigned char*>(buf.data()) + written;
+
+    co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd.handle(), p,
+        buf.size() - written, std::move(write_cb));
 }
 
 bool connection::write_awaitable::await_ready() const noexcept {
@@ -155,9 +144,8 @@ bool acceptor::accept_awaitable::await_ready() const noexcept {
 }
 
 bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
-    peer.resize(sizeof(struct sockaddr_storage));
     co_excutor::instance().async_io(co_excutor::CO_EVENT::ACCEPT, fd.handle(),
-        peer, [this, h](int res) mutable {
+        &addr, sizeof(addr), [this, h](int res) mutable {
             if(res >= 0) {
                 result = connection(FileDescriptor(res));
             } else {
@@ -193,9 +181,6 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
     addr.sin_port        = htons(static_cast<uint16_t>(port));
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    peer.resize(sizeof(addr));
-    std::memcpy(peer.data(), &addr, sizeof(addr));
-
     // Initiate non-blocking connect before registering with asio
     int rc = ::connect(conn_fd.handle(),
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
@@ -211,7 +196,8 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
 
     // Wait for connection completion
     co_excutor::instance().async_io(co_excutor::CO_EVENT::CONNECT,
-        conn_fd.handle(), peer, [this, h](int res) mutable {
+        conn_fd.handle(), static_cast<void*>(&addr), sizeof(addr),
+        [this, h](int res) mutable {
             if(res == 0) {
                 result = connection(conn_fd);
             } else {

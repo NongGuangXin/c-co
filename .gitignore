@@ -2,6 +2,7 @@ build/
 thirdparty/
 Testing/
 .cache/
+.vscode/
 
 # Prerequisites
 *.d

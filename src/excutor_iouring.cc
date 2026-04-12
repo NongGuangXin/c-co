@@ -2,6 +2,7 @@
 #include "log.h"
 
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -21,18 +22,17 @@
 struct uring_io_context {
     co_excutor::CO_EVENT event;
     int fd;
-    std::vector<unsigned char>* buf;
+    void* buf;
+    size_t len;
     co_excutor::io_callback_t cb;
-    ssize_t len;
-    socklen_t addrlen;
 
-    void reset(co_excutor::CO_EVENT ev, int f, std::vector<unsigned char>& b,
-        co_excutor::io_callback_t c, ssize_t l) {
+    void reset(co_excutor::CO_EVENT ev, int f, void* b, size_t l,
+        co_excutor::io_callback_t c) {
         event = ev;
         fd    = f;
-        buf   = &b;
-        cb    = std::move(c);
+        buf   = b;
         len   = l;
+        cb    = std::move(c);
     }
 };
 
@@ -68,21 +68,22 @@ class uring_instance {
         for(auto* p: freelist_) delete p;
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, io_callback_t cb, ssize_t len) {
+    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
+        io_callback_t cb) {
         if(!running_.load(std::memory_order_acquire)) {
             // 进程退出中，静默丢弃，不回调（避免无限循环）
             return;
         }
-        auto* ctx = acquire_ctx(event, fd, buf, std::move(cb), len);
+        auto* ctx = acquire_ctx(event, fd, buf, len, std::move(cb));
 
         std::lock_guard lock(sq_mutex_);
         struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
         if(!sqe) {
             log::erro("excutor_uring: io_uring_get_sqe failed fd={}", fd);
-            auto cb_copy = std::move(ctx->cb);
+            // auto cb_copy = std::move(ctx->cb);
+            ctx->cb(-ENOMEM);
             release_ctx(ctx);
-            cb_copy(-ENOMEM);
+            // cb_copy(-ENOMEM);
             return;
         }
 
@@ -114,15 +115,8 @@ class uring_instance {
                     static_cast<uring_io_context*>(io_uring_cqe_get_data(cqe));
                 if(!ctx) continue;
 
-                int res = cqe->res;
-
-                if(ctx->event == co_excutor::CO_EVENT::READ) {
-                    res = finalize_read(ctx, res);
-                }
-
-                auto cb_fn = std::move(ctx->cb);
+                ctx->cb(cqe->res);
                 release_ctx(ctx);
-                cb_fn(res);
             }
             io_uring_cq_advance(&ring_, count);
         }
@@ -130,76 +124,35 @@ class uring_instance {
 
   private:
     static void prep_sqe(struct io_uring_sqe* sqe, uring_io_context* ctx,
-        co_excutor::CO_EVENT event, int fd, std::vector<unsigned char>& buf,
-        ssize_t len) {
+        co_excutor::CO_EVENT event, int fd, void* buf, size_t len) {
         switch(event) {
         case co_excutor::CO_EVENT::READ: {
-            size_t nbytes = (len > 0) ? static_cast<size_t>(len) : buf.size();
-            nbytes        = std::min(nbytes, buf.size());
-            io_uring_prep_recv(sqe, fd, buf.data(), nbytes, 0);
+            io_uring_prep_recv(sqe, fd, buf, len, 0);
             break;
         }
         case co_excutor::CO_EVENT::WRITE: {
-            size_t offset = (len > 0) ? static_cast<size_t>(len) : 0;
-            size_t nbytes = buf.size() - offset;
-            io_uring_prep_send(
-                sqe, fd, buf.data() + offset, nbytes, MSG_NOSIGNAL);
+            io_uring_prep_send(sqe, fd, buf, len, MSG_NOSIGNAL);
             break;
         }
         case co_excutor::CO_EVENT::ACCEPT: {
-            ctx->addrlen = buf.size();
             io_uring_prep_accept(sqe, fd,
-                reinterpret_cast<struct sockaddr*>(buf.data()), &ctx->addrlen,
+                reinterpret_cast<struct sockaddr*>(buf),
+                reinterpret_cast<socklen_t*>(&ctx->len),
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
             break;
         }
         case co_excutor::CO_EVENT::CONNECT: {
             io_uring_prep_connect(sqe, fd,
-                reinterpret_cast<const sockaddr*>(buf.data()),
-                static_cast<socklen_t>(buf.size()));
+                reinterpret_cast<const sockaddr*>(buf),
+                static_cast<socklen_t>(len));
             break;
         }
         }
     }
 
-    // READ 完成后，如果 uring recv 填满了 buf 且 len==-1，
-    // 用同步 recv 继续读完内核缓冲区剩余数据
-    static int finalize_read(uring_io_context* ctx, int first_res) {
-        if(first_res <= 0) return first_res;
-
-        static constexpr size_t kChunkSize = 8192;
-        std::vector<unsigned char>& buf    = *ctx->buf;
-        bool auto_expand                   = (ctx->len == -1);
-        size_t total                       = static_cast<size_t>(first_res);
-
-        if(total < buf.size()) {
-            buf.resize(total);
-            return static_cast<int>(total);
-        }
-
-        while(auto_expand) {
-            buf.resize(total + kChunkSize);
-            ssize_t n = ::recv(
-                ctx->fd, buf.data() + total, buf.size() - total, MSG_DONTWAIT);
-            if(n > 0) {
-                total += static_cast<size_t>(n);
-                if(total < buf.size()) {
-                    buf.resize(total);
-                    break;
-                }
-                continue;
-            } else {
-                buf.resize(total);
-                break;
-            }
-        }
-
-        return static_cast<int>(total);
-    }
-
     // per-instance 对象池 + inflight 跟踪（用同一把锁）
-    uring_io_context* acquire_ctx(co_excutor::CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, io_callback_t cb, ssize_t len) {
+    uring_io_context* acquire_ctx(co_excutor::CO_EVENT event, int fd, void* buf,
+        size_t len, io_callback_t cb) {
         uring_io_context* ctx = nullptr;
         {
             std::lock_guard lock(ctx_mutex_);
@@ -209,7 +162,7 @@ class uring_instance {
             }
         }
         if(!ctx) ctx = new uring_io_context();
-        ctx->reset(event, fd, buf, std::move(cb), len);
+        ctx->reset(event, fd, buf, len, std::move(cb));
         {
             std::lock_guard lock(ctx_mutex_);
             inflight_.insert(ctx);
@@ -220,6 +173,7 @@ class uring_instance {
     void release_ctx(uring_io_context* ctx) {
         ctx->cb  = nullptr;
         ctx->buf = nullptr;
+        ctx->len = 0;
         std::lock_guard lock(ctx_mutex_);
         inflight_.erase(ctx);
         freelist_.push_back(ctx);
@@ -271,10 +225,10 @@ class excutor_uring_impl {
         }
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, io_callback_t cb, ssize_t len = -1) {
+    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
+        io_callback_t cb) {
         size_t idx = static_cast<size_t>(fd) % instances_.size();
-        instances_[idx]->async_io(event, fd, buf, std::move(cb), len);
+        instances_[idx]->async_io(event, fd, buf, len, std::move(cb));
     }
 
   private:
@@ -288,7 +242,7 @@ static excutor_uring_impl& uring_impl() {
     return instance;
 }
 
-void excutor_uring::async_io(CO_EVENT event, int fd,
-    std::vector<unsigned char>& buf, io_callback_t cb, ssize_t len) {
-    uring_impl().async_io(event, fd, buf, std::move(cb), len);
+void excutor_uring::async_io(
+    CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) {
+    uring_impl().async_io(event, fd, buf, len, std::move(cb));
 }

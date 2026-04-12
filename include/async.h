@@ -92,7 +92,7 @@ class acceptor {
     struct accept_awaitable {
         connection result;
         FileDescriptor fd;
-        std::vector<unsigned char> peer;
+        struct sockaddr_storage addr;
 
         bool await_ready() const noexcept;
         bool await_suspend(std::coroutine_handle<> h);
@@ -109,12 +109,10 @@ class acceptor {
 
 // Awaitable connect
 struct connect_awaitable {
-    int port;
-    connection result;
-    // 存储地址，确保 io_uring connect 期间生命周期有效
+    int port{};
+    connection result{};
+    FileDescriptor conn_fd{};
     struct sockaddr_in addr{};
-    FileDescriptor conn_fd;
-    std::vector<unsigned char> peer;
 
     bool await_ready() const noexcept;
     bool await_suspend(std::coroutine_handle<> h);
@@ -122,7 +120,7 @@ struct connect_awaitable {
 };
 
 inline connect_awaitable co_connect(int port) {
-    return connect_awaitable{port, {}, {}, {}, {}};
+    return connect_awaitable{port, {}, {}, {}};
 }
 
 acceptor co_listen(int port);

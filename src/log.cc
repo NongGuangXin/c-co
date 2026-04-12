@@ -53,8 +53,8 @@ std::string format_timestamp() {
     auto now        = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
     auto ms         = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  now.time_since_epoch()) %
-              1000;
+                          now.time_since_epoch()) %
+                      1000;
 
     std::tm tm_buf{};
     localtime_r(&time_t_now, &tm_buf);

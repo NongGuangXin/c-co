@@ -25,9 +25,9 @@
 struct epoll_io_context {
     co_excutor::CO_EVENT event;
     int fd;
-    std::vector<unsigned char>& buf;
+    void* buf;
+    size_t len;
     co_excutor::io_callback_t cb;
-    ssize_t len; // -1: 自动扩容读完就绪数据, >0: 精确读取/写入 len 字节
 };
 
 // ---------------------------------------------------------------------------
@@ -78,12 +78,11 @@ class epoll_instance {
         return initialized_;
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, co_excutor::io_callback_t cb,
-        ssize_t len) {
+    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
+        co_excutor::io_callback_t cb) {
         if(!initialized_ || !running_) { return; }
 
-        auto* ctx = new epoll_io_context{event, fd, buf, std::move(cb), len};
+        auto* ctx = new epoll_io_context{event, fd, buf, len, std::move(cb)};
 
         uint32_t epoll_events = EPOLLONESHOT | EPOLLET;
         switch(event) {
@@ -176,7 +175,7 @@ class epoll_instance {
                 int res = 0;
                 switch(ctx->event) {
                 case co_excutor::CO_EVENT::READ:
-                    res = readall(ctx);
+                    res = do_read(ctx);
                     break;
                 case co_excutor::CO_EVENT::WRITE:
                     res = do_write(ctx);
@@ -196,63 +195,27 @@ class epoll_instance {
     }
 
   private:
-    static int readall(epoll_io_context* ctx) {
-        static constexpr size_t kChunkSize = 8192;
-        std::vector<unsigned char>& buf    = ctx->buf;
-        bool auto_expand                   = (ctx->len == -1);
-        size_t total                       = 0;
-        int res                            = 0;
-
-        while(true) {
-            ssize_t n = ::recv(
-                ctx->fd, buf.data() + total, buf.size() - total, MSG_DONTWAIT);
-            if(n > 0) {
-                total += static_cast<size_t>(n);
-                if(total == buf.size()) {
-                    if(auto_expand) {
-                        buf.resize(total + kChunkSize);
-                        continue;
-                    } else {
-                        res = static_cast<int>(total);
-                        break;
-                    }
-                } else {
-                    res = static_cast<int>(total);
-                    buf.resize(total);
-                    break;
-                }
-            } else if(n == 0) {
-                // EOF：如果已有数据则先返回数据，下次 read 再返回 0
-                // 如果无数据则返回 0 表示纯 EOF
-                buf.resize(total);
-                res = (total > 0) ? static_cast<int>(total) : 0;
-                break;
-            } else {
-                if(errno == EAGAIN || errno == EWOULDBLOCK) {
-                    res = static_cast<int>(total);
-                    buf.resize(total);
-                    break;
-                }
-                res = -errno;
-                break;
-            }
+    static int do_read(epoll_io_context* ctx) {
+        ssize_t nread = ::recv(ctx->fd, ctx->buf, ctx->len, MSG_DONTWAIT);
+        if(nread >= 0) {
+            return static_cast<int>(nread);
+        } else {
+            if(errno == EAGAIN || errno == EWOULDBLOCK) { return 0; }
+            return -errno;
         }
-
-        return res;
     }
 
     static int do_write(epoll_io_context* ctx) {
-        if(ctx->len < 0) { ctx->len = 0; }
-        ssize_t n = ::send(ctx->fd, ctx->buf.data() + ctx->len,
-            ctx->buf.size() - ctx->len, MSG_DONTWAIT | MSG_NOSIGNAL);
+        ssize_t n =
+            ::send(ctx->fd, ctx->buf, ctx->len, MSG_DONTWAIT | MSG_NOSIGNAL);
         return (n >= 0) ? static_cast<int>(n) : -errno;
     }
 
     static int do_accept(epoll_io_context* ctx) {
-        socklen_t len = static_cast<socklen_t>(ctx->buf.size());
-        int client_fd = ::accept4(ctx->fd,
-            reinterpret_cast<struct sockaddr*>(ctx->buf.data()), &len,
-            SOCK_NONBLOCK | SOCK_CLOEXEC);
+        int client_fd =
+            ::accept4(ctx->fd, static_cast<struct sockaddr*>(ctx->buf),
+                reinterpret_cast<socklen_t*>(&ctx->len),
+                SOCK_NONBLOCK | SOCK_CLOEXEC);
         return (client_fd >= 0) ? client_fd : -errno;
     }
 
@@ -316,11 +279,10 @@ class excutor_epoll_impl {
         }
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, co_excutor::io_callback_t cb,
-        ssize_t len) {
+    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
+        co_excutor::io_callback_t cb) {
         size_t idx = static_cast<size_t>(fd) % instances_.size();
-        instances_[idx]->async_io(event, fd, buf, std::move(cb), len);
+        instances_[idx]->async_io(event, fd, buf, len, std::move(cb));
     }
 
   private:
@@ -334,7 +296,7 @@ static excutor_epoll_impl& epoll_impl() {
     return instance;
 }
 
-void excutor_epoll::async_io(CO_EVENT event, int fd,
-    std::vector<unsigned char>& buf, io_callback_t cb, ssize_t len) {
-    epoll_impl().async_io(event, fd, buf, std::move(cb), len);
+void excutor_epoll::async_io(
+    CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) {
+    epoll_impl().async_io(event, fd, buf, len, std::move(cb));
 }

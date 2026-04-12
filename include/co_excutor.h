@@ -24,11 +24,8 @@ class co_excutor {
 
     static co_excutor& instance();
 
-    // len == -1: READ 自动扩容读完所有就绪数据, WRITE 写一次就绪数据
-    // len  > 0: READ/WRITE 精确读取/写入 len 字节（不超过 buf 大小）
-    virtual void async_io(CO_EVENT event, int fd,
-        std::vector<unsigned char>& buf, io_callback_t cb,
-        ssize_t len = -1) = 0;
+    virtual void async_io(
+        CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) = 0;
 
     virtual void execute(task_t&& task);
 
@@ -96,13 +93,13 @@ class co_excutor {
 
 class excutor_epoll : public co_excutor {
   public:
-    void async_io(CO_EVENT event, int fd, std::vector<unsigned char>& buf,
-        io_callback_t cb, ssize_t len = -1) override;
+    void async_io(CO_EVENT event, int fd, void* buf, size_t len,
+        io_callback_t cb) override;
 };
 
 class excutor_uring : public co_excutor {
-    void async_io(CO_EVENT event, int fd, std::vector<unsigned char>& buf,
-        io_callback_t cb, ssize_t len = -1) override;
+    void async_io(CO_EVENT event, int fd, void* buf, size_t len,
+        io_callback_t cb) override;
 };
 
 void bind_thread_to_cpu(std::thread& t, int cpu_id);
