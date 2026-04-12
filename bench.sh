@@ -37,9 +37,11 @@ print_header() {
     echo "========================================"
 }
 
-echo "Building project..."
-echo ""
-cmake -S . -B build -G "Ninja" && cmake --build build/ > /dev/null 2>&1
+if [ ! -d "build/bin" ]; then
+    echo "Building project..."
+    echo ""
+    cmake -S . -B build -G "Ninja" && cmake --build build/ > /dev/null 2>&1
+fi
 
 echo "====================================="
 echo "  EPOLL Backend Tests"

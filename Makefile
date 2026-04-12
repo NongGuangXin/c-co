@@ -1,4 +1,4 @@
-.PHONY: all prebuild build run clean
+.PHONY: all prebuild build run clean release
 
 all: build
 
@@ -7,6 +7,10 @@ prebuild:
 
 build: prebuild
 	@cmake -S . -B build -G "Ninja"
+	@cmake --build build/
+
+release: prebuild
+	@cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 	@cmake --build build/
 
 run: build
