@@ -140,11 +140,11 @@ class epoll_instance {
 
     // event_loop 由外部线程调用
     void event_loop() {
-        static constexpr int MAX_EVENTS = 256;
+        static constexpr int MAX_EVENTS = 1024;
         struct epoll_event events[MAX_EVENTS];
 
         while(running_) {
-            int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 10);
+            int nfds = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 5);
 
             if(nfds < 0) {
                 if(errno == EINTR) continue;

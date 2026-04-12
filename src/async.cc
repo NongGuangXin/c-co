@@ -94,7 +94,7 @@ bool connection::read_until_awaitable::await_ready() noexcept {
 void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
     io_callback_t read_cb = [this, h](int res) mutable {
         if(res < 0) {
-            if(-res == EAGAIN || -res == EWOULDBLOCK) {
+            if(res == -EAGAIN || res == -EWOULDBLOCK) {
                 do_read(h);
                 return;
             }
@@ -141,8 +141,14 @@ std::expected<size_t, int> connection::read_until_awaitable::await_resume() {
 // -----------------------------------------------------------------------
 
 void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
+    void* p = const_cast<unsigned char*>(buf.data()) + written;
+
     io_callback_t write_cb = [this, h](int res) mutable {
         if(res < 0) {
+            if(res == -EAGAIN || res == -EWOULDBLOCK) {
+                do_write(h);
+                return;
+            }
             result = std::unexpected(-res);
             h.resume();
             return;
@@ -159,8 +165,6 @@ void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
         return;
     };
 
-    void* p = const_cast<unsigned char*>(buf.data()) + written;
-
     co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd.handle(), p,
         buf.size() - written, std::move(write_cb));
 }
@@ -173,6 +177,9 @@ bool connection::write_awaitable::await_ready() noexcept {
         if(nsend > 0) {
             written += static_cast<size_t>(nsend);
             continue;
+        }
+        if(nsend < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return false;
         }
         break;
     }

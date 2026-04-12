@@ -39,15 +39,13 @@ task<int> handle_client(connection conn) {
 
         // Check if the request asks for keep-alive (simple heuristic)
         // ab sends "Connection: Keep-Alive" when using -k flag
-        bool keep_alive   = false;
         size_t bytes_read = read_result.value();
         std::string_view req(
             reinterpret_cast<const char*>(buffer.data()), bytes_read);
-        if(req.find("keep-alive") != std::string_view::npos ||
-            req.find("Keep-Alive") != std::string_view::npos ||
-            req.find("Keep-alive") != std::string_view::npos) {
-            keep_alive = true;
-        }
+
+        bool keep_alive = (req.find("keep-alive") != std::string_view::npos) ||
+                          (req.find("Keep-Alive") != std::string_view::npos) ||
+                          (req.find("Keep-alive") != std::string_view::npos);
 
         // Write the HTTP response
         const auto& resp =

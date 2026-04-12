@@ -6,7 +6,6 @@
 #include <cstring>
 #include <random>
 
-// Thread-local RNG to avoid re-seeding each call
 static thread_local std::mt19937 tl_rng = []() {
     std::random_device rd;
     std::mt19937 rng;
@@ -40,9 +39,11 @@ task<int> echo_client(int port) {
 
     log::info("Connected to server successfully");
 
+    std::vector<unsigned char> send_data;
+    std::vector<unsigned char> buffer;
+
     for(size_t i = 1; i < 8 * 1024 * 1024 + 99; i *= 2) {
-        // 发送消息
-        std::vector<unsigned char> send_data = generate_random_ascii(i);
+        send_data = generate_random_ascii(i);
 
         auto write_result = co_await conn.co_write(send_data);
         if(!write_result.has_value()) {
@@ -50,8 +51,7 @@ task<int> echo_client(int port) {
             break;
         }
 
-        // 接收回显
-        std::vector<unsigned char> buffer(i);
+        buffer.resize(i);
 
         auto read_result = co_await conn.co_read_until(buffer);
         if(!read_result.has_value()) {
@@ -76,7 +76,6 @@ task<int> echo_client(int port) {
         }
 
         log::info("Echoed {} bytes successfully", i);
-        // std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
 
     log::info("Client finished");

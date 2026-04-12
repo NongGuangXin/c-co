@@ -5,21 +5,19 @@
 #include <cstdlib>
 
 task<int> handle_client(connection conn) {
-    constexpr size_t BUF_SIZE = 65536;
+    constexpr size_t BUF_SIZE = 256 * 1024;
     std::vector<unsigned char> buffer(BUF_SIZE);
 
     while(true) {
-        buffer.resize(BUF_SIZE);
         auto read_result = co_await conn.co_read(buffer);
         if(!read_result.has_value()) { break; }
 
         size_t bytes_read = read_result.value();
         if(bytes_read == 0) { break; }
 
-        // Resize to exact read size so co_write sends only valid data
-        // This avoids allocating a new vector - resize doesn't free memory
-        buffer.resize(bytes_read);
-        auto write_result = co_await conn.co_write(buffer);
+        std::span<unsigned char> to_send(buffer.data(), bytes_read);
+        auto write_result = co_await conn.co_write(
+            std::vector<unsigned char>(to_send.begin(), to_send.end()));
         if(!write_result.has_value()) { break; }
     }
 
