@@ -49,7 +49,7 @@ bool connection::read_until_awaitable::await_ready() const noexcept {
 }
 
 void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
-    co_excutor::io_callback_t read_cb = [this, h](int res) mutable {
+    io_callback_t read_cb = [this, h](int res) mutable {
         if(res < 0) {
             result = std::unexpected(-res);
             h.resume();
@@ -98,7 +98,7 @@ std::expected<size_t, int> connection::read_until_awaitable::await_resume() {
 // -----------------------------------------------------------------------
 
 void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
-    co_excutor::io_callback_t write_cb = [this, h](int res) mutable {
+    io_callback_t write_cb = [this, h](int res) mutable {
         if(res < 0) {
             result = std::unexpected(-res);
             h.resume();

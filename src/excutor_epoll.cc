@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <utility>
 #include <vector>
 #include <functional>
 #include <unordered_map>
@@ -27,7 +28,7 @@ struct epoll_io_context {
     int fd;
     void* buf;
     size_t len;
-    co_excutor::io_callback_t cb;
+    io_callback_t cb;
 };
 
 // ---------------------------------------------------------------------------
@@ -79,10 +80,10 @@ class epoll_instance {
     }
 
     void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
-        co_excutor::io_callback_t cb) {
+        io_callback_t&& cb) {
         if(!initialized_ || !running_) { return; }
 
-        auto* ctx = new epoll_io_context{event, fd, buf, len, std::move(cb)};
+        auto* ctx = new epoll_io_context{event, fd, buf, len, cb};
 
         uint32_t epoll_events = EPOLLONESHOT | EPOLLET;
         switch(event) {
@@ -109,17 +110,16 @@ class epoll_instance {
                         log::erro(
                             "excutor_epoll: epoll_ctl ADD failed fd={}: {}", fd,
                             std::strerror(errno));
-                        auto cb_copy = std::move(ctx->cb);
+                        ctx->cb(-errno);
                         delete ctx;
-                        cb_copy(-errno);
                         return;
                     }
                 } else {
                     log::erro("excutor_epoll: epoll_ctl MOD failed fd={}: {}",
                         fd, std::strerror(errno));
-                    auto cb_copy = std::move(ctx->cb);
+
+                    ctx->cb(-errno);
                     delete ctx;
-                    cb_copy(-errno);
                     return;
                 }
             }
@@ -280,9 +280,10 @@ class excutor_epoll_impl {
     }
 
     void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
-        co_excutor::io_callback_t cb) {
+        io_callback_t&& cb) {
         size_t idx = static_cast<size_t>(fd) % instances_.size();
-        instances_[idx]->async_io(event, fd, buf, len, std::move(cb));
+        instances_[idx]->async_io(
+            event, fd, buf, len, std::forward<io_callback_t>(cb));
     }
 
   private:
@@ -297,6 +298,6 @@ static excutor_epoll_impl& epoll_impl() {
 }
 
 void excutor_epoll::async_io(
-    CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) {
-    epoll_impl().async_io(event, fd, buf, len, std::move(cb));
+    CO_EVENT event, int fd, void* buf, size_t len, io_callback_t&& cb) {
+    epoll_impl().async_io(event, fd, buf, len, std::forward<io_callback_t>(cb));
 }

@@ -4,8 +4,10 @@
 #include "thrdpool.h"
 
 #include <future>
-#include <vector>
 #include <functional>
+
+using task_t        = std::function<void()>;
+using io_callback_t = std::function<void(int)>;
 
 class co_excutor {
   public:
@@ -16,16 +18,13 @@ class co_excutor {
         CONNECT = 0x8
     };
 
-    using task_t        = std::function<void()>;
-    using io_callback_t = std::function<void(int)>;
-
     co_excutor()          = default;
     virtual ~co_excutor() = default;
 
     static co_excutor& instance();
 
     virtual void async_io(
-        CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) = 0;
+        CO_EVENT event, int fd, void* buf, size_t len, io_callback_t&& cb) = 0;
 
     virtual void execute(task_t&& task);
 
@@ -94,12 +93,12 @@ class co_excutor {
 class excutor_epoll : public co_excutor {
   public:
     void async_io(CO_EVENT event, int fd, void* buf, size_t len,
-        io_callback_t cb) override;
+        io_callback_t&& cb) override;
 };
 
 class excutor_uring : public co_excutor {
     void async_io(CO_EVENT event, int fd, void* buf, size_t len,
-        io_callback_t cb) override;
+        io_callback_t&& cb) override;
 };
 
 void bind_thread_to_cpu(std::thread& t, int cpu_id);
