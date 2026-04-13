@@ -2,9 +2,6 @@
 
 这是一个基于 C++ 协程的异步网络库（仅供学习），支持 **epoll** 和 **io_uring** 双后端。
 
-- 主分支实现了基于epoll的IO调度
-- 另一个分支实现了基于io_uring的IO调度
-
 ## 特性
 
 - **C++23 协程支持**：利用 `co_await`、`co_return` 等关键字实现简洁的异步代码
@@ -162,6 +159,9 @@ ab -c 100 -n 100000 [-k] http://127.0.0.1:9999/
 
 # 多线程压力测试
 ./build/bin/epoll/echo_client_mt
+
+# 运行 10 次测试
+for i in $(seq 1 10); do ./bench.sh ; done && echo "运行完成"
 ```
 
 ## 核心组件说明
@@ -228,7 +228,7 @@ connection conn = co_connect(9999); // 非阻塞连接到 localhost
 ```cpp
 class co_excutor {
 public:
-    enum CO_EVENT { READ = 0x1, WRITE = 0x2, ACCEPT = 0x4, CONNECT = 0x8 };
+    enum CO_EVENT { RECV = 0x1, SEND = 0x2, ACCEPT = 0x4, CONNECT = 0x8 };
 
     static co_excutor& instance();           // 单例（epoll 或 uring）
     void execute(task_t&& task);             // 提交任务到线程池

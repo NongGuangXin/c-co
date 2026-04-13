@@ -11,14 +11,10 @@ class connection {
   public:
     connection() = default;
     explicit connection(FileDescriptor fd): fd_(std::move(fd)) { }
-
     explicit operator bool() const noexcept {
         return static_cast<bool>(fd_);
     }
 
-    // Awaitable for co_read: 读取一次可用数据
-    // 优化：使用 raw int fd 避免 shared_ptr 拷贝（connection 生命周期覆盖
-    // awaitable）
     struct read_awaitable {
         int fd;
         std::vector<unsigned char>& buf;
@@ -45,11 +41,10 @@ class connection {
         std::expected<size_t, int> await_resume();
     };
 
-    // Awaitable for co_write (handles short writes)
     struct write_awaitable {
         int fd;
         const std::vector<unsigned char>& buf;
-        size_t written;
+        size_t written = 0;
         std::expected<size_t, int> result;
 
         void do_write(std::coroutine_handle<> h);

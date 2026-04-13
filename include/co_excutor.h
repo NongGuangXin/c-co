@@ -12,7 +12,15 @@
 #include <coroutine>
 #include <algorithm>
 
-using task_t = std::function<void()>;
+using task_t        = std::function<void()>;
+using io_callback_t = std::function<void(int)>;
+
+enum class CO_EVENT : unsigned char {
+    RECV    = 0x1,
+    SEND    = 0x2,
+    ACCEPT  = 0x4,
+    CONNECT = 0x8
+};
 
 // Registry for detached coroutine handles that need cleanup on shutdown.
 // Detached coroutines self-destroy at final_suspend; this registry tracks
@@ -56,110 +64,8 @@ class detached_registry {
     std::vector<std::coroutine_handle<>> handles_;
 };
 
-// Lightweight type-erased callback for IO completions.
-// Uses inline buffer (48 bytes) to avoid heap allocation for typical lambda
-// captures. Falls back to std::function for larger captures.
-// 觉得太复杂可以直接：using io_callback_t = std::function<void(int)>;
-class io_callback_t {
-    static constexpr size_t BUF_SIZE = 48;
-
-    using invoke_fn  = void (*)(void*, int);
-    using destroy_fn = void (*)(void*);
-    using move_fn    = void (*)(void* src, void* dst);
-
-    alignas(std::max_align_t) unsigned char buf_[BUF_SIZE]{};
-    invoke_fn invoke_{nullptr};
-    destroy_fn destroy_{nullptr};
-    move_fn move_{nullptr};
-
-    void clear() noexcept {
-        if(destroy_) destroy_(buf_);
-        invoke_  = nullptr;
-        destroy_ = nullptr;
-        move_    = nullptr;
-    }
-
-  public:
-    io_callback_t() = default;
-
-    template <typename F, typename = std::enable_if_t<
-                              !std::is_same_v<std::decay_t<F>, io_callback_t>>>
-    io_callback_t(F&& f) {
-        using Fn = std::decay_t<F>;
-        static_assert(sizeof(Fn) <= BUF_SIZE,
-            "io_callback_t: callable too large for inline buffer");
-        static_assert(std::is_nothrow_move_constructible_v<Fn>,
-            "io_callback_t: callable must be nothrow move constructible");
-        ::new(buf_) Fn(std::forward<F>(f));
-        invoke_ = [](void* p, int res) {
-            (*static_cast<Fn*>(p))(res);
-        };
-        destroy_ = [](void* p) {
-            static_cast<Fn*>(p)->~Fn();
-        };
-        move_ = [](void* src, void* dst) {
-            ::new(dst) Fn(std::move(*static_cast<Fn*>(src)));
-            static_cast<Fn*>(src)->~Fn();
-        };
-    }
-
-    io_callback_t(io_callback_t&& other) noexcept {
-        if(other.move_) {
-            other.move_(other.buf_, buf_);
-            invoke_        = other.invoke_;
-            destroy_       = other.destroy_;
-            move_          = other.move_;
-            other.invoke_  = nullptr;
-            other.destroy_ = nullptr;
-            other.move_    = nullptr;
-        }
-    }
-
-    io_callback_t& operator=(io_callback_t&& other) noexcept {
-        if(this != &other) {
-            clear();
-            if(other.move_) {
-                other.move_(other.buf_, buf_);
-                invoke_        = other.invoke_;
-                destroy_       = other.destroy_;
-                move_          = other.move_;
-                other.invoke_  = nullptr;
-                other.destroy_ = nullptr;
-                other.move_    = nullptr;
-            }
-        }
-        return *this;
-    }
-
-    io_callback_t(std::nullptr_t) noexcept { }
-
-    io_callback_t& operator=(std::nullptr_t) noexcept {
-        clear();
-        return *this;
-    }
-
-    ~io_callback_t() {
-        clear();
-    }
-
-    explicit operator bool() const noexcept {
-        return invoke_ != nullptr;
-    }
-
-    void operator()(int res) {
-        invoke_(buf_, res);
-    }
-};
-
 class co_excutor {
   public:
-    enum class CO_EVENT : unsigned char {
-        READ    = 0x1,
-        WRITE   = 0x2,
-        ACCEPT  = 0x4,
-        CONNECT = 0x8
-    };
-
     co_excutor()          = default;
     virtual ~co_excutor() = default;
 

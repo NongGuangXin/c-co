@@ -17,23 +17,29 @@
 #include <netinet/tcp.h>
 #include <fcntl.h>
 
-// ---------------------------------------------------------------------------
+// -------------------------------------
 // uring_io_context: 可池化的上下文结构体
-// ---------------------------------------------------------------------------
-
+// -------------------------------------
 struct uring_io_context {
-    co_excutor::CO_EVENT event;
+    CO_EVENT event;
     int fd;
     void* buf;
     size_t len;
     io_callback_t cb;
 };
 
+static void optimize_socket(int fd) {
+    int yes     = 1;
+    int bufsize = 1048576; // 1MB socket buffers for better throughput
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &bufsize, sizeof(bufsize));
+}
+
 // ---------------------------------------------------------------------------
 // uring_instance: 独立的 ring + event_loop + per-instance 对象池
-// 优化：移除 inflight 跟踪，减少锁争用；单锁保护 freelist
 // ---------------------------------------------------------------------------
-
 class uring_instance {
   public:
     explicit uring_instance(std::atomic<bool>& running): running_(running) {
@@ -48,12 +54,11 @@ class uring_instance {
 
     ~uring_instance() {
         io_uring_queue_exit(&ring_);
-        // all_allocated_ is the superset of freelist_; delete once
-        for(auto* p: all_allocated_) delete p;
+        for(auto* p: all_allocated_) { delete p; }
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
-        io_callback_t&& cb) {
+    void async_io(
+        CO_EVENT event, int fd, void* buf, size_t len, io_callback_t&& cb) {
         if(!running_.load(std::memory_order_relaxed)) { return; }
 
         auto* ctx  = acquire_ctx();
@@ -111,8 +116,7 @@ class uring_instance {
                     continue;
                 }
 
-                if(ctx->event == co_excutor::CO_EVENT::ACCEPT &&
-                    cqe->res >= 0) {
+                if(ctx->event == CO_EVENT::ACCEPT && cqe->res >= 0) {
                     optimize_socket(cqe->res);
                 }
 
@@ -123,35 +127,26 @@ class uring_instance {
         }
     }
 
-    static void optimize_socket(int fd) {
-        int yes     = 1;
-        int bufsize = 1048576; // 1MB socket buffers for better throughput
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &yes, sizeof(yes));
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &bufsize, sizeof(bufsize));
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &bufsize, sizeof(bufsize));
-    }
-
   private:
     static void prep_sqe(struct io_uring_sqe* sqe, uring_io_context* ctx,
-        co_excutor::CO_EVENT event, int fd, void* buf, size_t len) {
+        CO_EVENT event, int fd, void* buf, size_t len) {
         switch(event) {
-        case co_excutor::CO_EVENT::READ: {
+        case CO_EVENT::RECV: {
             io_uring_prep_recv(sqe, fd, buf, len, 0);
             break;
         }
-        case co_excutor::CO_EVENT::WRITE: {
+        case CO_EVENT::SEND: {
             io_uring_prep_send(sqe, fd, buf, len, MSG_NOSIGNAL);
             break;
         }
-        case co_excutor::CO_EVENT::ACCEPT: {
+        case CO_EVENT::ACCEPT: {
             io_uring_prep_accept(sqe, fd,
                 reinterpret_cast<struct sockaddr*>(buf),
                 reinterpret_cast<socklen_t*>(&ctx->len),
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
             break;
         }
-        case co_excutor::CO_EVENT::CONNECT: {
+        case CO_EVENT::CONNECT: {
             io_uring_prep_connect(sqe, fd,
                 reinterpret_cast<const sockaddr*>(buf),
                 static_cast<socklen_t>(len));
@@ -197,12 +192,12 @@ class uring_instance {
 // ---------------------------------------------------------------------------
 // excutor_uring_impl: 管理多个 uring_instance，按 fd 分片
 // ---------------------------------------------------------------------------
-
 class excutor_uring_impl {
+    constexpr static size_t num_cpus = 4;
+
   public:
     excutor_uring_impl() {
-        size_t num_cpus = std::thread::hardware_concurrency();
-
+        // size_t num_cpus = std::thread::hardware_concurrency();
         for(size_t i = 0; i < num_cpus; i++) {
             instances_.push_back(std::make_unique<uring_instance>(running_));
             log::dbug("excutor_uring: created io_uring instance {}", i);
@@ -211,7 +206,7 @@ class excutor_uring_impl {
         for(size_t i = 0; i < num_cpus; i++) {
             loop_threads_.emplace_back(
                 [this, i]() { instances_[i]->event_loop(); });
-            bind_thread_to_cpu(loop_threads_.back(), static_cast<int>(i));
+            // bind_thread_to_cpu(loop_threads_.back(), static_cast<int>(i));
         }
 
         log::dbug("excutor_uring: {} io_uring event loops started", num_cpus);
@@ -223,21 +218,22 @@ class excutor_uring_impl {
 
     void stop() {
         bool expected = true;
-        if(!running_.compare_exchange_strong(expected, false)) return;
+        if(!running_.compare_exchange_strong(expected, false)) { return; }
         for(auto& t: loop_threads_) {
             if(t.joinable()) {
-                if(t.get_id() == std::this_thread::get_id()) {
-                    t.detach();
-                } else {
-                    t.join();
-                }
+                t.join();
+                // if(t.get_id() == std::this_thread::get_id()) {
+                //     t.detach();
+                // } else {
+                //     t.join();
+                // }
             }
         }
     }
 
-    void async_io(co_excutor::CO_EVENT event, int fd, void* buf, size_t len,
-        io_callback_t cb) {
-        size_t idx = static_cast<size_t>(fd) % instances_.size();
+    void async_io(
+        CO_EVENT event, int fd, void* buf, size_t len, io_callback_t cb) {
+        size_t idx = static_cast<size_t>(fd) % num_cpus;
         instances_[idx]->async_io(
             event, fd, buf, len, std::forward<io_callback_t>(cb));
     }

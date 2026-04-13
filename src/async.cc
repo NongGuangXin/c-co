@@ -18,7 +18,7 @@
 #include <vector>
 
 // -----------------------------------------------------------------------
-// read_awaitable: 使用 co_excutor async_io READ 读取一次可用数据
+// read_awaitable: 使用 co_excutor async_io RECV 读取一次可用数据
 // 优化：fd 已改为 raw int，避免 shared_ptr 拷贝开销
 // -----------------------------------------------------------------------
 
@@ -45,8 +45,8 @@ bool connection::read_awaitable::await_suspend(std::coroutine_handle<> h) {
         h.resume();
     };
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::READ, fd, buf.data(),
-        buf.size(), std::move(read_cb));
+    co_excutor::instance().async_io(
+        CO_EVENT::RECV, fd, buf.data(), buf.size(), std::move(read_cb));
     return true;
 }
 
@@ -117,7 +117,7 @@ void connection::read_until_awaitable::do_read(std::coroutine_handle<> h) {
     size_t len = target - total;
 
     co_excutor::instance().async_io(
-        co_excutor::CO_EVENT::READ, fd, p, len, std::move(read_cb));
+        CO_EVENT::RECV, fd, p, len, std::move(read_cb));
 }
 
 bool connection::read_until_awaitable::await_suspend(
@@ -131,7 +131,7 @@ std::expected<size_t, int> connection::read_until_awaitable::await_resume() {
 }
 
 // -----------------------------------------------------------------------
-// write_awaitable: 使用 co_excutor async_io WRITE 写入全部数据（处理短写）
+// write_awaitable: 使用 co_excutor async_io SEND 写入全部数据（处理短写）
 // -----------------------------------------------------------------------
 
 void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
@@ -158,8 +158,8 @@ void connection::write_awaitable::do_write(std::coroutine_handle<> h) {
         do_write(h);
     };
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::WRITE, fd, p,
-        buf.size() - written, std::move(write_cb));
+    co_excutor::instance().async_io(
+        CO_EVENT::SEND, fd, p, buf.size() - written, std::move(write_cb));
 }
 
 bool connection::write_awaitable::await_ready() noexcept {
@@ -217,8 +217,8 @@ bool acceptor::accept_awaitable::await_ready() const noexcept {
 }
 
 bool acceptor::accept_awaitable::await_suspend(std::coroutine_handle<> h) {
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::ACCEPT, fd, &addr,
-        sizeof(addr), [this, h](int res) mutable {
+    co_excutor::instance().async_io(
+        CO_EVENT::ACCEPT, fd, &addr, sizeof(addr), [this, h](int res) mutable {
             if(res >= 0) {
                 result = connection(FileDescriptor(res));
             } else {
@@ -269,9 +269,8 @@ bool connect_awaitable::await_suspend(std::coroutine_handle<> h) {
         return false;
     }
 
-    co_excutor::instance().async_io(co_excutor::CO_EVENT::CONNECT,
-        conn_fd.handle(), static_cast<void*>(&addr), sizeof(addr),
-        [this, h](int res) mutable {
+    co_excutor::instance().async_io(CO_EVENT::CONNECT, conn_fd.handle(),
+        static_cast<void*>(&addr), sizeof(addr), [this, h](int res) mutable {
             if(res == 0) {
                 result = connection(conn_fd);
             } else {

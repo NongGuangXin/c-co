@@ -2,6 +2,8 @@
 #include "co_excutor.h"
 #include "log.h"
 #include "task.h"
+#include <errno.h>
+#include <cerrno>
 #include <cstddef>
 #include <cstring>
 #include <random>
@@ -55,7 +57,9 @@ task<int> echo_client(int port) {
 
         auto read_result = co_await conn.co_read_until(buffer);
         if(!read_result.has_value()) {
-            log::erro("{} read error: {}", i, read_result.error());
+            if(read_result.error() != ECONNRESET) {
+                log::erro("{} read error: {}", i, read_result.error());
+            }
             break;
         }
 
@@ -75,7 +79,7 @@ task<int> echo_client(int port) {
             break;
         }
 
-        log::info("Echoed {} bytes successfully", i);
+        // log::info("Echoed {} bytes successfully", i);
     }
 
     log::info("Client finished");
