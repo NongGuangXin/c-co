@@ -44,6 +44,9 @@ class uring_instance {
   public:
     explicit uring_instance(std::atomic<bool>& running): running_(running) {
         struct io_uring_params params{};
+        params.flags = IORING_SETUP_SQPOLL;
+        params.sq_thread_idle = 200000;
+
         int rc = io_uring_queue_init_params(4096, &ring_, &params);
         if(rc < 0) {
             log::erro("excutor_uring: io_uring_queue_init failed: {}",
